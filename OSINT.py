@@ -1,8 +1,8 @@
-import asyncio
-from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
+import asyncio # Built-in libray to run asyncronous code
+from playwright.async_api import async_playwright # A browser automation library that control the Chrome browser programmatically
+from playwright_stealth import Stealth # A plugin that modifies the browser's fingerprint to look less like a bot
 from typing import TypedDict, List
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, END # Core library for LangGraph classes. StateGraph is the graph builder
 
 async def scrape_deep_content(url):
     async with async_playwright() as p:
