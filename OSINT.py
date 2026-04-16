@@ -4,6 +4,13 @@ from playwright_stealth import Stealth # A plugin that modifies the browser's fi
 from typing import TypedDict, List
 from langgraph.graph import StateGraph, END # Core library for LangGraph classes. StateGraph is the graph builder
 
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel, Field
+
+# Initialize the Brain
+llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
+
 async def scrape_deep_content(url):
     async with async_playwright() as p:
         # Launch headless browser
@@ -38,6 +45,7 @@ class ReseacherState(TypedDict):
     search_queries: List[str]
     visited_url: List[str]
     scraped_data: str
+    needs_more_info: bool # New flag for the router
     final_report: str
 
 # Nodes (The "Actors")
@@ -121,7 +129,7 @@ workflow.add_edge("reporter", END)
 # Compile into an executable application
 app = workflow.compile()
 
-if __name__ == "__main__":
+async def main():
     initial_state = {
         "objective": "Identify the primary capabilities od a specific defense AI framework.",
         "search_queries": [],
@@ -132,6 +140,9 @@ if __name__ == "__main__":
     
     print("Starting Agentic Loop...")
     # Invoke Graph
-    final_state = app.invoke(initial_state)
+    final_state = await app.ainvoke(initial_state)
     print("\n-- FINAL REPORT --")
     print(final_state["final_report"])
+
+if __name__ == "__main__":
+    asyncio.run(main())
