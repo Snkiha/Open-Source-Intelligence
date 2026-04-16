@@ -48,14 +48,32 @@ class ReseacherState(TypedDict):
     needs_more_info: bool # New flag for the router
     final_report: str
 
+class SearchQueries(BaseModel):
+    queries: List[str] = Field(description="A list of 2-3 targeted search queries to find the missing information.")
+
 # Nodes (The "Actors")
-def planner_node(state: ReseacherState):
+async def planner_node(state: ReseacherState):
     print("\n-- [NODE: PLANNER] Generating Queries --")
-    # TODO: Add LLM prompt to read objective and the generate Google/Tavily queries
-    mock_queries = ["defense contractor acquisition 2026", "aerospace drone OSINT."]
-    return {"search_queries": mock_queries}
-
-
+    
+    # Bind the tool to the LLM to force JSON output
+    structured_llm = llm.with_structured_output(SearchQueries)
+    
+    # Create prompt
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are an expert OSINT researcher. Break down the user's objective into highly targeted web search queries."),
+        ("user", "Objective: {objective}\nData gathered so far: {scraped_data}\n\nWhat should we search for next?")
+    ])
+    
+    # Chain it together and run
+    chain = prompt | structured_llm
+    response = await chain.ainvoke({
+        "objective": state["objective"],
+        "scraped_data": state["scraped_data"] or "None"
+    })
+    
+    # Return the dynamically generated queries to the state
+    return {"search_queries": response.queries}
+    
 def search_scraper_node(state: ReseacherState):
     print("\n-- [NODE: SEARCH & SCRAPE Gathering data")
     # TODO: Integrate Tavily search and the async Playwright script
