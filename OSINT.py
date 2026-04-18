@@ -91,11 +91,29 @@ def search_scraper_node(state: ReseacherState):
     current_urls.append(target_url)
     
     return {"scraped_data": updated_data, "visited_url": current_urls}
-        
-def evaluator_node(state: ReseacherState):
+
+class Evaluation(BaseModel):
+    is_complete: bool = Field(description="True if scraped data fully answers the objective. False if information is missing.")
+    reasoning: str = Field(description="Why you made this decision.")
+
+async def evaluator_node(state: ReseacherState):
     print("\n-- [NODE: EVALUATOR] Analyzing Gaps --")
-    # TODO: Add LLM prompt to chenck if 'scraped_data' satisfies the 'objective'
-    return state
+    structured_llm = llm.with_structured_output(Evaluation)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are a quality assurance AI. Check if the scraped data satisfies the objective. Be strict."),
+        ("user", "Objective: {objective}\n\nScraped Data:\n{scraped_data}")
+    ])
+    
+    chain = prompt | structured_llm
+    
+    # Pass the data to LLM
+    response = await chain.ainvoke({
+        "objective": state["objective"],
+        "scraped_data": state["scraped_data"]
+    })
+    print(f"Evaluator Reasoning: {response.reasoning}")
+    
+    return {"needs_more_info": not response.is_complete}
 
 def reported_node(state: ReseacherState):
     print("\n-- [NODE: REPORTER] Compiling Final Dossier --")
