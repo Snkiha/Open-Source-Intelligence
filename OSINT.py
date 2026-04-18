@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Initialize the Brain
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.2, max_retries=2)
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2, max_retries=2)
 
 async def scrape_deep_content(url):
     async with async_playwright() as p:
@@ -38,7 +38,7 @@ async def scrape_deep_content(url):
             # Basic cleaning: remove excessive whitespace
             clean_content = " ". join(content.split())
             
-            return clean_content[:10000] # Return first 10k characters to stay within context limits
+            return clean_content[:100000] # Return first 10k characters to stay within context limits
         except Exception as e:
             return f"Error scraping {url}: {str(e)}"
         finally:
@@ -79,10 +79,10 @@ async def planner_node(state: ReseacherState):
     # Return the dynamically generated queries to the state
     return {"search_queries": response.queries}
     
-def search_scraper_node(state: ReseacherState):
+async def search_scraper_node(state: ReseacherState):
     print("\n-- [NODE: SEARCH & SCRAPE Gathering data")
     # TODO: Integrate Tavily search and the async Playwright script
-    target_url = "https://ai.plainenglish.io/train-test-split-explained-why-data-leakage-happens-so-easily-f2ad54bbfa08"
+    target_url = "https://www.lockheedmartin.com/en-us/products/f-22.html"
     
     print(f'Executing scraper on: {target_url}')
     new_data = asyncio.run(scrape_deep_content(target_url))
@@ -120,7 +120,7 @@ async def evaluator_node(state: ReseacherState):
     
     return {"needs_more_info": not response.is_complete}
 
-def reported_node(state: ReseacherState):
+async def reported_node(state: ReseacherState):
     print("\n-- [NODE: REPORTER] Compiling Final Dossier --")
     # TODO: Add LLM prompt to format the raw data into a clean Markdown report
     dossier = "# Final OSINT Report\n\nAll objective met."
@@ -129,15 +129,12 @@ def reported_node(state: ReseacherState):
 # Routing Logic (The "Brain")
 def should_continue(state: ReseacherState):
     print("\n-- [ROUTER] Deciding next steps --")
-    # TODO: This will eventually read the output of the Evaluator LLM.
     
-    decision = "finish"
-    
-    if decision == "continue":
+    if state.get("needs_more_info"):
         print("-> Missing Information. Looping back to planner.")
         return "continue"
     else:
-        print("-> Objectives met. Routing to Reporter.")
+        print("-> Objective met. Routing to Reporter.")
         return "finish"
 
 # Build and compile the Graph
@@ -172,10 +169,11 @@ app = workflow.compile()
 
 async def main():
     initial_state = {
-        "objective": "Identify the primary capabilities od a specific defense AI framework.",
+        "objective": "Identify the key points.",
         "search_queries": [],
         "visited_urls": [],
         "scraped_data": "",
+        "needs_more_info": True,
         "final_report": ""
     }
     
