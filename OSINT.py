@@ -4,7 +4,7 @@ from playwright_stealth import Stealth # A plugin that modifies the browser's fi
 from typing import TypedDict, List
 from langgraph.graph import StateGraph, END # Core library for LangGraph classes. StateGraph is the graph builder
 
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Initialize the Brain
-llm = ChatOpenAI(model="gemini-1.5-pro", temperature=0.2, max_retries=2)
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.2, max_retries=2)
 
 async def scrape_deep_content(url):
     async with async_playwright() as p:
