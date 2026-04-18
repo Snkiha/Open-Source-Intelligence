@@ -8,8 +8,13 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Initialize the Brain
-llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
+llm = ChatOpenAI(model="gemini-1.5-pro", temperature=0.2, max_retries=2)
 
 async def scrape_deep_content(url):
     async with async_playwright() as p:
