@@ -48,10 +48,11 @@ async def scrape_deep_content(url):
 class ReseacherState(TypedDict):
     objective: str
     search_queries: List[str]
-    visited_url: List[str]
+    visited_urls: List[str]
     scraped_data: str
     needs_more_info: bool # New flag for the router
     final_report: str
+    iteration_count: int
 
 class SearchQueries(BaseModel):
     queries: List[str] = Field(description="A list of 2-3 targeted search queries to find the missing information.")
@@ -77,25 +78,28 @@ async def planner_node(state: ReseacherState):
     })
     
     # Return the dynamically generated queries to the state
-    return {"search_queries": response.queries}
+    return {
+        "search_queries": response.queries,
+        "iteration_count": state.get("iteration_count", 0) + 1
+    }
     
 async def search_scraper_node(state: ReseacherState):
     print("\n-- [NODE: SEARCH & SCRAPE Gathering data")
     # TODO: Integrate Tavily search and the async Playwright script
-    target_url = "https://www.lockheedmartin.com/en-us/products/f-22.html"
+    target_url = "https://avi-8.co.uk/blogs/the-aviation-journal/the-f-22-raptor-the-worlds-most-advanced-stealth-fighter?srsltid=AfmBOoo63nJHDv8YhRtdqhcxRBx9PWYM6DvUsEDV9ezMHLwU31curc7I&shpxid=b1b78086-efc0-44b8-8b9c-c2f751393566"
     
     print(f'Executing scraper on: {target_url}')
-    new_data = asyncio.run(scrape_deep_content(target_url))
+    new_data = await scrape_deep_content(target_url)
     
     # Append to existing data
     current_data = state.get("scraped_data", "")
     updated_data = current_data + "\n\n-- NEW SOURCE --" + new_data
     
     # Update the visited urls
-    current_urls = state.get("visited_url", [])
+    current_urls = state.get("visited_urls", [])
     current_urls.append(target_url)
     
-    return {"scraped_data": updated_data, "visited_url": current_urls}
+    return {"scraped_data": updated_data, "visited_urls": [*current_urls, target_url]}
 
 class Evaluation(BaseModel):
     is_complete: bool = Field(description="True if scraped data fully answers the objective. False if information is missing.")
@@ -130,7 +134,7 @@ async def reported_node(state: ReseacherState):
 def should_continue(state: ReseacherState):
     print("\n-- [ROUTER] Deciding next steps --")
     
-    if state.get("needs_more_info"):
+    if state.get("needs_more_info") and state.get("iteration_count", 0) < 3:
         print("-> Missing Information. Looping back to planner.")
         return "continue"
     else:
@@ -169,12 +173,13 @@ app = workflow.compile()
 
 async def main():
     initial_state = {
-        "objective": "Identify the key points.",
+        "objective": "Identify the key capabilities of the Lockheed Martin F-22 Raptor.",
         "search_queries": [],
         "visited_urls": [],
         "scraped_data": "",
         "needs_more_info": True,
-        "final_report": ""
+        "final_report": "",
+        "iteration_count": 0
     }
     
     print("Starting Agentic Loop...")
