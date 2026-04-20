@@ -69,12 +69,7 @@ async def scrape_deep_content(url, log_callback):
 # --- STREAMLIT UI & EXECUTION ---
 def main():
     # SIDEBAR CONTROLS
-    st.sidebar.title("Nexus_AI Protocol")
-    st.sidebar.markdown("### 🔑 Credentials")
-    
-    # Allow passing keys via UI or .env
-    google_key = st.sidebar.text_input("Google Gemini API Key", value=os.getenv("GOOGLE_API_KEY", ""), type="password")
-    tavily_key = st.sidebar.text_input("Tavily API Key", value=os.getenv("TAVILY_API_KEY", ""), type="password")
+    st.sidebar.title("Web Scraper Agent")
     
     st.sidebar.markdown("### 🎯 Mission")
     objective = st.sidebar.text_area("Target Directive", value="Identify the key capabilities of the BMW M4.")
