@@ -16,6 +16,14 @@ from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
+@st.cache_resource
+def install_playwright_browsers():
+    """Installs the Chromium browser automatically on first run."""
+    st.info("Installing browser dependencies... This will only take a moment on the first run.")
+    os.system("playwright install chromium")
+
+install_playwright_browsers()
+
 # -- STREAMLIT PAGE CONFIG -- #
 st.set_page_config(page_title="Agentic OSINT Researcher", page_icon="🕵️‍♂️", layout="wide")
 load_dotenv()
