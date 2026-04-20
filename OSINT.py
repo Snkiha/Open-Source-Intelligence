@@ -8,6 +8,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
+from tavily import AsyncTavilyClient
+
 import os
 from dotenv import load_dotenv
 
@@ -86,20 +88,27 @@ async def planner_node(state: ReseacherState):
 async def search_scraper_node(state: ReseacherState):
     print("\n-- [NODE: SEARCH & SCRAPE Gathering data")
     # TODO: Integrate Tavily search and the async Playwright script
-    target_url = "https://avi-8.co.uk/blogs/the-aviation-journal/the-f-22-raptor-the-worlds-most-advanced-stealth-fighter?srsltid=AfmBOoo63nJHDv8YhRtdqhcxRBx9PWYM6DvUsEDV9ezMHLwU31curc7I&shpxid=b1b78086-efc0-44b8-8b9c-c2f751393566"
+    client = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
     
-    print(f'Executing scraper on: {target_url}')
-    new_data = await scrape_deep_content(target_url)
-    
-    # Append to existing data
     current_data = state.get("scraped_data", "")
-    updated_data = current_data + "\n\n-- NEW SOURCE --" + new_data
-    
-    # Update the visited urls
     current_urls = state.get("visited_urls", [])
-    current_urls.append(target_url)
+    new_urls = []
     
-    return {"scraped_data": updated_data, "visited_urls": [*current_urls, target_url]}
+    for query in state["search_queries"]:
+        print(f"Searching: {query}")
+        results = await client.search(query, max_results=3)
+        
+        for r in results.get("results", []):
+            url = r["url"]
+            if url not in current_urls and url not in new_urls:
+                page_content = await scrape_deep_content(url)
+                current_data += f"\n\n-- SOURCE: {url} --\n{page_content}"
+                new_urls.append(url)
+    
+    return {
+        "scraped_data": current_data,
+        "visited_urls": [*current_data, *new_urls]
+    }
 
 class Evaluation(BaseModel):
     is_complete: bool = Field(description="True if scraped data fully answers the objective. False if information is missing.")
