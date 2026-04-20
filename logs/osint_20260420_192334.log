@@ -1,0 +1,10 @@
+19:23:35 [INFO] osint_agent: Starting Agentic Loop....
+19:23:35 [INFO] osint_agent: Objective: Identify the key capabilities of the Lockheed Martin F-22 Raptor.
+19:23:35 [INFO] osint_agent: Log file: logs\osint_20260420_192334.log
+19:23:35 [INFO] google_genai.models: AFC is enabled with max remote calls: 10.
+19:23:38 [INFO] httpx: HTTP Request: POST https://api.tavily.com/search "HTTP/1.1 200 OK"
+19:25:06 [INFO] httpx: HTTP Request: POST https://api.tavily.com/search "HTTP/1.1 200 OK"
+19:25:12 [INFO] httpx: HTTP Request: POST https://api.tavily.com/search "HTTP/1.1 200 OK"
+19:26:39 [INFO] google_genai.models: AFC is enabled with max remote calls: 10.
+19:26:45 [INFO] google_genai.models: AFC is enabled with max remote calls: 10.
+19:26:50 [INFO] osint_agent: ---Run Complete---

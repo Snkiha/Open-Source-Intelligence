@@ -12,8 +12,37 @@ from tavily import AsyncTavilyClient
 
 import os
 from dotenv import load_dotenv
+import logging
+from datetime import datetime
+from pathlib import Path
 
 load_dotenv()
+
+# -- LOGGING -- #
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
+
+log_filename = LOG_DIR / f"osint_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[
+        logging.StreamHandler(), # Console output
+        logging.FileHandler(log_filename, "w"),
+    ],
+)
+logger = logging.getLogger("osint_agent")
+
+# --CONFIG-- #
+MAX_SCRAPED_CHARS = 80_000 # Hard cap on total scraped data
+MAX_CHARS_PER_PAGE = 15_000 # Max chars taken from any single page
+MAX_ITERATIONS = 3
+
+for var in ("GOOGLE_API_KEY", "TAVILY_API_KEY"):
+    if not os.getenv(var):
+        raise EnvironmentError(f"{var} is not set in .env")
 
 # Initialize the Brain
 llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0.2, max_retries=2)
@@ -31,20 +60,14 @@ async def scrape_deep_content(url):
         await Stealth().apply_stealth_async(page)
         
         try:
-            print(f"Scraping: {url}")
-            await page.goto(url, wait_until="networkidle", timeout=80000)
-            
-            # Extract the inner text of the body - this removes tags and keeps content
+            logger.info("Scraping: %s", url)
+            await page.goto(url, wait_until="networkidle", timeout=80_000)
             content = await page.evaluate("() => document.body.innerText")
-            
-            # Basic cleaning: remove excessive whitespace
-            clean_content = " ". join(content.split())
-            
-            return clean_content[:100000] # Return first 10k characters to stay within context limits
-        except Exception as e:
-            return f"Error scraping {url}: {str(e)}"
-        finally:
-            await browser.close()
+            clean = " ".join(content.split())
+            return clean[:MAX_CHARS_PER_PAGE]
+        except Exception as exc:
+            logger.warning("Failed to scrape %s: %s", url, exc)
+            return "" # Empty string if there is error
 
 # Agent State (Agent's Memory)
 class ReseacherState(TypedDict):
@@ -87,7 +110,7 @@ async def planner_node(state: ReseacherState):
     
 async def search_scraper_node(state: ReseacherState):
     print("\n-- [NODE: SEARCH & SCRAPE] Gathering data --")
-    # TODO: Integrate Tavily search and the async Playwright script
+    # Tavily search and the async Playwright script
     client = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
     
     current_data = state.get("scraped_data", "")
@@ -204,15 +227,15 @@ async def main():
         "iteration_count": 0
     }
     
-    print("Starting Agentic Loop...")
+    logger.info("Starting Agentic Loop....")
+    logger.info("Objective: %s", initial_state["objective"])
+    logger.info("Log file: %s", log_filename)
+    
+    
     # Invoke Graph
     final_state = await app.ainvoke(initial_state)
-    print("\n-- FINAL REPORT --")
+    logger.info("---Run Complete---")
     print(final_state["final_report"])
-    
-    with open("report.md", "w") as f:
-        f.write(final_state["final_report"])
-    print("\nReport saved to report.md")
 
 if __name__ == "__main__":
     asyncio.run(main())
