@@ -86,7 +86,7 @@ async def planner_node(state: ReseacherState):
     }
     
 async def search_scraper_node(state: ReseacherState):
-    print("\n-- [NODE: SEARCH & SCRAPE Gathering data")
+    print("\n-- [NODE: SEARCH & SCRAPE] Gathering data --")
     # TODO: Integrate Tavily search and the async Playwright script
     client = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
     
