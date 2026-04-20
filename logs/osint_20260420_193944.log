@@ -1,0 +1,33 @@
+19:39:45 [INFO] osint_agent: Starting Agentic Loop....
+19:39:45 [INFO] osint_agent: Objective: Identify the key capabilities of the Lockheed Martin F-22 Raptor.
+19:39:45 [INFO] osint_agent: Log file: logs\osint_20260420_193944.log
+19:39:45 [INFO] google_genai.models: AFC is enabled with max remote calls: 10.
+19:39:46 [INFO] httpx: HTTP Request: POST https://api.tavily.com/search "HTTP/1.1 200 OK"
+19:39:47 [INFO] osint_agent: Scraping: https://www.lockheedmartin.com/en-us/products/f-22.html
+19:41:07 [WARNING] osint_agent: Failed to scrape https://www.lockheedmartin.com/en-us/products/f-22.html: Page.goto: Timeout 80000ms exceeded.
+Call log:
+  - navigating to "https://www.lockheedmartin.com/en-us/products/f-22.html", waiting until "networkidle"
+
+19:41:09 [INFO] osint_agent: Scraping: https://en.wikipedia.org/wiki/Lockheed_Martin_F-22_Raptor
+19:41:11 [INFO] osint_agent: Scraping: https://www.lockheedmartin.com/content/dam/lockheed-martin/aero/documents/F-22/F22FastFacts62022.pdf
+19:41:13 [WARNING] osint_agent: Failed to scrape https://www.lockheedmartin.com/content/dam/lockheed-martin/aero/documents/F-22/F22FastFacts62022.pdf: Page.goto: Download is starting
+Call log:
+  - navigating to "https://www.lockheedmartin.com/content/dam/lockheed-martin/aero/documents/F-22/F22FastFacts62022.pdf", waiting until "networkidle"
+
+19:41:14 [INFO] httpx: HTTP Request: POST https://api.tavily.com/search "HTTP/1.1 200 OK"
+19:41:15 [INFO] osint_agent: Scraping: https://avi-8.com/blogs/the-aviation-journal/unveiling-the-f-22-raptor-the-pinnacle-of-air-superiority?srsltid=AfmBOooNp-UeggmlrBULbfA0m6bdBCnQoYO1DemCI8rdt1oYCW1dn8Be
+19:42:35 [WARNING] osint_agent: Failed to scrape https://avi-8.com/blogs/the-aviation-journal/unveiling-the-f-22-raptor-the-pinnacle-of-air-superiority?srsltid=AfmBOooNp-UeggmlrBULbfA0m6bdBCnQoYO1DemCI8rdt1oYCW1dn8Be: Page.goto: Timeout 80000ms exceeded.
+Call log:
+  - navigating to "https://avi-8.com/blogs/the-aviation-journal/unveiling-the-f-22-raptor-the-pinnacle-of-air-superiority?srsltid=AfmBOooNp-UeggmlrBULbfA0m6bdBCnQoYO1DemCI8rdt1oYCW1dn8Be", waiting until "networkidle"
+
+19:42:38 [INFO] httpx: HTTP Request: POST https://api.tavily.com/search "HTTP/1.1 200 OK"
+19:42:38 [INFO] osint_agent: Scraping: https://www.ausairpower.net/APA-Raptor.html
+19:43:58 [WARNING] osint_agent: Failed to scrape https://www.ausairpower.net/APA-Raptor.html: Page.goto: Timeout 80000ms exceeded.
+Call log:
+  - navigating to "https://www.ausairpower.net/APA-Raptor.html", waiting until "networkidle"
+
+19:44:00 [INFO] osint_agent: Scraping: https://www.facebook.com/hnaftali/posts/the-f-22-raptor-is-pure-air-dominance-stealth-speed-and-power-that-makes-america/1452652103209254/
+19:44:05 [INFO] osint_agent: Scraping: https://nationalinterest.org/blog/buzz/f-22-raptor-best-air-superiority-fighter-world-211520/
+19:44:09 [INFO] google_genai.models: AFC is enabled with max remote calls: 10.
+19:44:10 [INFO] google_genai.models: AFC is enabled with max remote calls: 10.
+19:44:14 [INFO] osint_agent: ---Run Complete---

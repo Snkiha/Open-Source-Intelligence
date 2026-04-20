@@ -218,7 +218,7 @@ app = workflow.compile()
 
 async def main():
     initial_state = {
-        "objective": "Identify the key capabilities of the Lockheed Martin F-22 Raptor.",
+        "objective": "Identify the key capabilities of the BMW M4.",
         "search_queries": [],
         "visited_urls": [],
         "scraped_data": "",
