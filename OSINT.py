@@ -136,9 +136,22 @@ async def evaluator_node(state: ReseacherState):
 async def reported_node(state: ReseacherState):
     print("\n-- [NODE: REPORTER] Compiling Final Dossier --")
     # TODO: Add LLM prompt to format the raw data into a clean Markdown report
-    dossier = "# Final OSINT Report\n\nAll objective met."
-    return {"final_report": dossier}
-
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", (
+            "You are an intelligent analyst. Using only the provided source data, "
+            "write a structured Markdown report. Include: an executive summary,"
+            "key findings organised by theme, and a source list."
+            "Do not invent information not present in the data."
+            )),
+        ("user", "Objective: {objective}\n\nSource Data:\n{scraped_data}")
+    ])
+    chain = prompt | llm
+    response = await chain.ainvoke({
+        "objective": state["objective"],
+        "scraped_data": state["scraped_data"]
+    })
+    return {"final_report": response.content}
+    
 # Routing Logic (The "Brain")
 def should_continue(state: ReseacherState):
     print("\n-- [ROUTER] Deciding next steps --")
