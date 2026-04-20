@@ -1,0 +1,10 @@
+streamlit
+langgraph
+langchain-google-genai
+langchain-community
+langchain-core
+pydantic
+tavily-python
+playwright
+playwright-stealth
+python-dotenv
