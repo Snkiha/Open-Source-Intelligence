@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Initialize the Brain
-llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2, max_retries=2)
+llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0.2, max_retries=2)
 
 async def scrape_deep_content(url):
     async with async_playwright() as p:
@@ -107,7 +107,7 @@ async def search_scraper_node(state: ReseacherState):
     
     return {
         "scraped_data": current_data,
-        "visited_urls": [*current_data, *new_urls]
+        "visited_urls": [*current_urls, *new_urls]
     }
 
 class Evaluation(BaseModel):
@@ -150,7 +150,7 @@ async def reported_node(state: ReseacherState):
         "objective": state["objective"],
         "scraped_data": state["scraped_data"]
     })
-    return {"final_report": response.content}
+    return {"final_report": response.content[0]["text"]}
     
 # Routing Logic (The "Brain")
 def should_continue(state: ReseacherState):
@@ -209,6 +209,10 @@ async def main():
     final_state = await app.ainvoke(initial_state)
     print("\n-- FINAL REPORT --")
     print(final_state["final_report"])
+    
+    with open("report.md", "w") as f:
+        f.write(final_state["final_report"])
+    print("\nReport saved to report.md")
 
 if __name__ == "__main__":
     asyncio.run(main())
