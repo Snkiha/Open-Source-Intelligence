@@ -49,6 +49,7 @@ class ResearcherState(TypedDict):
     needs_more_info: bool
     final_report: str
     iteration_count: int
+    queries_run: int
 
 class SearchQueries(BaseModel):
     queries: List[str] = Field(description="A list of 2-3 targeted search queries to find the missing information.")
@@ -56,6 +57,14 @@ class SearchQueries(BaseModel):
 class Evaluation(BaseModel):
     is_complete: bool = Field(description="True if scraped data fully answers the objective. False if information is missing.")
     reasoning: str = Field(description="Why you made this decision.")
+
+def render_stats(placeholder, queries, urls, chars):
+    with placeholder.container():
+        st.markdown("### 📊 Live Statistics")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("🔍 Queries Ran", queries)
+        c2.metric("🌐 Websites Scraped", urls)
+        c3.metric("📝 Characters Collected", chars)
 
 # -- UTILITY FUNCTIONS -- #
 async def scrape_deep_content(url, st_log):
@@ -82,7 +91,7 @@ async def scrape_deep_content(url, st_log):
             return ""
 
 # -- AGENT WORKFLOW FACTORY -- #
-def create_workflow(google_api_key: str, tavily_api_key: str, max_iterations: int, st_log):
+def create_workflow(google_api_key: str, tavily_api_key: str, max_iterations: int, st_log, stats_placeholder):
     # Initialize LLM with the provided key
     llm = ChatGoogleGenerativeAI(
         model="gemini-3.1-flash-lite-preview", # You can change this to "gemini-2.5-flash" if needed
@@ -107,9 +116,19 @@ def create_workflow(google_api_key: str, tavily_api_key: str, max_iterations: in
         })
         
         st_log.write(f"🔎 Generated Queries: {', '.join(response.queries)}")
+        
+        new_queries_count = state.get("queries_run", 0) + len(response.queries)
+        render_stats(
+            stats_placeholder,
+            new_queries_count,
+            len(state.get("visited_urls", [])),
+            len(state.get("scraped_data", ""))
+        )
+        
         return {
             "search_queries": response.queries,
-            "iteration_count": state.get("iteration_count", 0) + 1
+            "iteration_count": state.get("iteration_count", 0) + 1,
+            "queries_run": new_queries_count
         }
         
     async def search_scraper_node(state: ResearcherState):
@@ -131,6 +150,14 @@ def create_workflow(google_api_key: str, tavily_api_key: str, max_iterations: in
                     if page_content:
                         current_data += f"\n\n-- SOURCE: {url} --\n{page_content}"
                         new_urls.append(url)
+                        
+                        # Update stats dynamically as we scrape each page
+                        render_stats(
+                            stats_placeholder,
+                            state.get("queries_run", 0),
+                            len(current_urls) + len(new_urls),
+                            len(current_data)
+                        )
         
         return {
             "scraped_data": current_data,
@@ -206,8 +233,8 @@ def create_workflow(google_api_key: str, tavily_api_key: str, max_iterations: in
     return workflow.compile()
 
 # -- ASYNC RUNNER -- #
-async def run_agent_ui(objective, google_key, tavily_key, max_iters, st_log):
-    app = create_workflow(google_key, tavily_key, max_iters, st_log)
+async def run_agent_ui(objective, google_key, tavily_key, max_iters, st_log, stats_placeholder):
+    app = create_workflow(google_key, tavily_key, max_iters, st_log, stats_placeholder)
     
     initial_state = {
         "objective": objective,
@@ -216,7 +243,8 @@ async def run_agent_ui(objective, google_key, tavily_key, max_iters, st_log):
         "scraped_data": "",
         "needs_more_info": True,
         "final_report": "",
-        "iteration_count": 0
+        "iteration_count": 0,
+        "queries_run": 0
     }
     
     final_state = await app.ainvoke(initial_state)
