@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 # -- CONFIG & SECRETS -- #
 load_dotenv() # Loads local .env if present
 
+os.system("playwright install chromium")
+
 # Fallback to Streamlit secrets if not in local environment
 if not os.getenv("GOOGLE_API_KEY") and "GOOGLE_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
