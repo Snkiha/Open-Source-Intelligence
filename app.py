@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TypedDict, List
 
+os.system("playwright install chromium") # Keeps Cloud deployments happy
+
 import streamlit as st
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
@@ -17,11 +19,8 @@ from tavily import AsyncTavilyClient
 from dotenv import load_dotenv
 
 # -- CONFIG & SECRETS -- #
-load_dotenv() # Loads local .env if present
+load_dotenv() 
 
-os.system("playwright install chromium")
-
-# Fallback to Streamlit secrets if not in local environment
 if not os.getenv("GOOGLE_API_KEY") and "GOOGLE_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
 if not os.getenv("TAVILY_API_KEY") and "TAVILY_API_KEY" in st.secrets:
@@ -54,6 +53,7 @@ class ReseacherState(TypedDict):
     needs_more_info: bool
     final_report: str
     iteration_count: int
+    total_queries_run: int # NEW: Added to track all historical queries
 
 class SearchQueries(BaseModel):
     queries: List[str] = Field(description="A list of 2-3 targeted search queries to find the missing information.")
@@ -102,7 +102,8 @@ async def planner_node(state: ReseacherState):
     
     return {
         "search_queries": response.queries,
-        "iteration_count": state.get("iteration_count", 0) + 1
+        "iteration_count": state.get("iteration_count", 0) + 1,
+        "total_queries_run": state.get("total_queries_run", 0) + len(response.queries) # NEW: Tally up the total
     }
     
 async def search_scraper_node(state: ReseacherState):
@@ -113,7 +114,7 @@ async def search_scraper_node(state: ReseacherState):
     new_urls = []
     
     for query in state["search_queries"]:
-        results = await client.search(query, max_results=2) # Reduced to 2 for UI speed
+        results = await client.search(query, max_results=2)
         for r in results.get("results", []):
             url = r["url"]
             if url not in current_urls and url not in new_urls:
@@ -160,8 +161,7 @@ async def reporter_node(state: ReseacherState):
         "scraped_data": state["scraped_data"]
     })
     
-    # Standardised Langchain content extraction
-    return {"final_report": response.content}
+    return {"final_report": response.content[0]["text"]}
 
 def should_continue(state: ReseacherState):
     if state.get("needs_more_info") and state.get("iteration_count", 0) < 3:
@@ -190,7 +190,9 @@ def build_graph():
     return workflow.compile()
 
 # -- ASYNC RUNNER -- #
-async def run_agent_workflow(objective, status_container):
+async def run_agent_workflow(objective, status_container, metric_containers):
+    q_metric, u_metric, c_metric = metric_containers
+    
     app = build_graph()
     initial_state = {
         "objective": objective,
@@ -199,14 +201,33 @@ async def run_agent_workflow(objective, status_container):
         "scraped_data": "",
         "needs_more_info": True,
         "final_report": "",
-        "iteration_count": 0
+        "iteration_count": 0,
+        "total_queries_run": 0
     }
     
     final_report = ""
     
-    # Stream events to the UI
+    # Local trackers for UI
+    current_queries = 0
+    current_urls = 0
+    current_chars = 0
+    
     async for output in app.astream(initial_state):
         for node_name, state_update in output.items():
+            
+            # --- NEW: Update live numbers ---
+            if "total_queries_run" in state_update:
+                current_queries = state_update["total_queries_run"]
+            if "visited_urls" in state_update:
+                current_urls = len(state_update["visited_urls"])
+            if "scraped_data" in state_update:
+                current_chars = len(state_update["scraped_data"])
+                
+            q_metric.metric("Queries Run", current_queries)
+            u_metric.metric("Sites Scraped", current_urls)
+            c_metric.metric("Chars Collected", current_chars)
+            # ---------------------------------
+
             if node_name == "planner":
                 status_container.write(f"🧠 **Planner generated queries:** {', '.join(state_update.get('search_queries', []))}")
             elif node_name == "search_scraper":
@@ -229,7 +250,6 @@ st.set_page_config(page_title="OSINT Agent", page_icon="🕵️‍♂️", layou
 st.title("🕵️‍♂️ Autonomous OSINT Agent")
 st.markdown("Enter a research objective. The agent will autonomously plan, search, scrape, and evaluate until it has enough data to write a comprehensive report.")
 
-# Check for API Keys before allowing execution
 if not os.getenv("GOOGLE_API_KEY") or not os.getenv("TAVILY_API_KEY"):
     st.error("Missing API Keys! Please ensure GOOGLE_API_KEY and TAVILY_API_KEY are set in your .env or Streamlit Secrets.")
     st.stop()
@@ -242,18 +262,32 @@ if st.button("Start Research", type="primary"):
     else:
         st.divider()
         
-        # Interactive status container
+        # --- NEW: Metric placeholders ---
+        col1, col2, col3 = st.columns(3)
+        q_metric = col1.empty()
+        u_metric = col2.empty()
+        c_metric = col3.empty()
+        
+        # Initialize at zero
+        q_metric.metric("Queries Run", 0)
+        u_metric.metric("Sites Scraped", 0)
+        c_metric.metric("Chars Collected", 0)
+        # --------------------------------
+        
         with st.status("Agent initialized. Starting research loop...", expanded=True) as status:
             try:
-                # Execute async LangGraph flow safely inside Streamlit
-                final_report = asyncio.run(run_agent_workflow(objective, status))
+                # Pass the metric containers into the runner so it can update them
+                final_report = asyncio.run(run_agent_workflow(
+                    objective, 
+                    status, 
+                    (q_metric, u_metric, c_metric)
+                ))
                 status.update(label="Research Complete!", state="complete", expanded=False)
             except Exception as e:
                 status.update(label="An error occurred", state="error")
                 st.error(f"Error details: {e}")
                 final_report = None
         
-        # Display Final Result
         if final_report:
             st.subheader("Final Report")
             st.markdown(final_report)
