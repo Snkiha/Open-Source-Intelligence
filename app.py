@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 import subprocess
 import sys
 import concurrent.futures
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 # -- CONFIG & SECRETS -- #
 load_dotenv()
@@ -298,25 +299,26 @@ if st.button("Start Research", type="primary"):
         
         with st.status("Agent initialized. Starting research loop...", expanded=True) as status:
             try:
+                # --- NEW: Grab the current Streamlit context ---
+                ctx = get_script_run_ctx()
+
                 def run_in_thread(objective, status, metrics):
+                    # --- NEW: Inject the context into this background thread ---
+                    add_script_run_ctx(ctx=ctx)
+                    
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
-                        # Run your agent
                         return loop.run_until_complete(
                             run_agent_workflow(objective, status, metrics)
                         )
                     finally:
-                        # Clean up any lingering background tasks (like LangChain's aclose)
+                        # (Include the cleanup logic from the previous step here)
                         pending = asyncio.all_tasks(loop)
                         for task in pending:
                             task.cancel()
-                        
-                        # Wait for the cancelled tasks to finish cleaning up
                         if pending:
                             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                            
-                        # Safely close the loop
                         loop.close()
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
