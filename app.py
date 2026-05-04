@@ -6,8 +6,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import TypedDict, List
 
-os.system("playwright install chromium") # Keeps Cloud deployments happy
-
 import streamlit as st
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
@@ -18,10 +16,22 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from tavily import AsyncTavilyClient
 from dotenv import load_dotenv
+import subprocess
+import sys
 
 nest_asyncio.apply()
 # -- CONFIG & SECRETS -- #
-load_dotenv() 
+load_dotenv()
+
+@st.cache_resource
+def install_playwright():
+    subprocess.run(
+        [sys.executable, "-m", "playwright", "install", "chromium"],
+        check=True,
+        capture_output=True
+    )
+
+install_playwright()
 
 if not os.getenv("GOOGLE_API_KEY") and "GOOGLE_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
