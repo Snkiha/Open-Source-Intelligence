@@ -97,7 +97,7 @@ async def scrape_deep_content(url):
 
 # -- NODES -- #
 async def planner_node(state: ResearcherState):
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
+    llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", temperature=0.2)
     structured_llm = llm.with_structured_output(SearchQueries)
     
     prompt = ChatPromptTemplate.from_messages([
@@ -155,7 +155,7 @@ async def evaluator_node(state: ResearcherState):
         logger.info("Evaluator skipped — no data yet.")
         return {"needs_more_info": True}
 
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
+    llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", temperature=0.2)
     structured_llm = llm.with_structured_output(Evaluation)
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are a quality assurance AI. Check if the scraped data satisfies the objective. Be strict."),
@@ -169,7 +169,7 @@ async def evaluator_node(state: ResearcherState):
     return {"needs_more_info": not response.is_complete}
 
 async def reporter_node(state: ResearcherState):
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
+    llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", temperature=0.2)
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
             "You are an intelligent analyst. Using only the provided source data, "
