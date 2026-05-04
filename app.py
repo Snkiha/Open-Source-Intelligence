@@ -331,7 +331,7 @@ if st.button("Start Research", type="primary"):
                     asyncio.set_event_loop(loop)
                     try:
                         return loop.run_until_complete(
-                            run_agent_workflow(objective, status, metrics)
+                            run_agent_workflow(objective, selected_model, status, metrics)
                         )
                     finally:
                         # (Include the cleanup logic from the previous step here)
