@@ -301,11 +301,21 @@ if st.button("Start Research", type="primary"):
         
         with st.status("Agent initialized. Starting research loop...", expanded=True) as status:
             try:
-                # Pass the metric containers into the runner so it can update them
-                loop = asyncio.get_event_loop()
-                final_report = loop.run_until_complete(
-                    run_agent_workflow(objective, status, (q_metric, u_metric, c_metric))
-                )
+                def run_in_thread(objective, status, metrics):
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(
+                            run_agent_workflow(objective, status, metrics)
+                        )
+                    finally:
+                        loop.close()
+
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(run_in_thread, objective, status, (q_metric, u_metric, c_metric))
+                    final_report = future.result()
+
                 status.update(label="Research Complete!", state="complete", expanded=False)
             except Exception as e:
                 status.update(label="An error occurred", state="error")
