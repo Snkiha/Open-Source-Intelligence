@@ -1,4 +1,5 @@
 import asyncio
+import nest_asyncio
 import os
 import logging
 from datetime import datetime
@@ -18,6 +19,7 @@ from pydantic import BaseModel, Field
 from tavily import AsyncTavilyClient
 from dotenv import load_dotenv
 
+nest_asyncio.apply()
 # -- CONFIG & SECRETS -- #
 load_dotenv() 
 
@@ -45,7 +47,7 @@ logging.basicConfig(
 logger = logging.getLogger("osint_agent")
 
 # -- AGENT STATE & MODELS -- #
-class ReseacherState(TypedDict):
+class ResearcherState(TypedDict):
     objective: str
     search_queries: List[str]
     visited_urls: List[str]
@@ -80,13 +82,13 @@ async def scrape_deep_content(url):
             return clean[:MAX_CHARS_PER_PAGE]
         except Exception as exc:
             logger.warning("Failed to scrape %s: %s", url, exc)
-            return "" 
+            return ""
         finally:
             await browser.close()
 
 # -- NODES -- #
-async def planner_node(state: ReseacherState):
-    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0.2)
+async def planner_node(state: ResearcherState):
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
     structured_llm = llm.with_structured_output(SearchQueries)
     
     prompt = ChatPromptTemplate.from_messages([
@@ -106,45 +108,58 @@ async def planner_node(state: ReseacherState):
         "total_queries_run": state.get("total_queries_run", 0) + len(response.queries) # NEW: Tally up the total
     }
     
-async def search_scraper_node(state: ReseacherState):
+async def search_scraper_node(state: ResearcherState):
     client = AsyncTavilyClient(api_key=os.environ["TAVILY_API_KEY"])
-    
     current_data = state.get("scraped_data", "")
     current_urls = state.get("visited_urls", [])
-    new_urls = []
-    
+
+    # Collect URLs across all queries first
+    urls_to_scrape = []
     for query in state["search_queries"]:
         results = await client.search(query, max_results=2)
         for r in results.get("results", []):
             url = r["url"]
-            if url not in current_urls and url not in new_urls:
-                page_content = await scrape_deep_content(url)
-                if page_content:
-                    current_data += f"\n\n-- SOURCE: {url} --\n{page_content}"
-                    new_urls.append(url)
-    
+            if url not in current_urls and url not in urls_to_scrape:
+                urls_to_scrape.append(url)
+
+    # Scrape all URLs concurrently
+    pages = await asyncio.gather(*[scrape_deep_content(url) for url in urls_to_scrape])
+
+    new_urls = []
+    for url, page_content in zip(urls_to_scrape, pages):
+        if not page_content:
+            continue
+        if len(current_data) >= MAX_SCRAPED_CHARS:
+            logger.warning("MAX_SCRAPED_CHARS reached. Stopping early.")
+            break
+        current_data += f"\n\n-- SOURCE: {url} --\n{page_content}"
+        new_urls.append(url)
+
     return {
         "scraped_data": current_data,
         "visited_urls": [*current_urls, *new_urls]
     }
 
-async def evaluator_node(state: ReseacherState):
-    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0.2)
+async def evaluator_node(state: ResearcherState):
+    # Skip LLM call if there's nothing to evaluate yet
+    if not state.get("scraped_data", "").strip():
+        logger.info("Evaluator skipped — no data yet.")
+        return {"needs_more_info": True}
+
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
     structured_llm = llm.with_structured_output(Evaluation)
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are a quality assurance AI. Check if the scraped data satisfies the objective. Be strict."),
         ("user", "Objective: {objective}\n\nScraped Data:\n{scraped_data}")
     ])
-    
     chain = prompt | structured_llm
     response = await chain.ainvoke({
         "objective": state["objective"],
         "scraped_data": state["scraped_data"]
     })
-    
     return {"needs_more_info": not response.is_complete}
 
-async def reporter_node(state: ReseacherState):
+async def reporter_node(state: ResearcherState):
     llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0.2)
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
@@ -163,7 +178,7 @@ async def reporter_node(state: ReseacherState):
     
     return {"final_report": response.content[0]["text"]}
 
-def should_continue(state: ReseacherState):
+def should_continue(state: ResearcherState):
     if state.get("needs_more_info") and state.get("iteration_count", 0) < 3:
         return "continue"
     else:
@@ -171,7 +186,7 @@ def should_continue(state: ReseacherState):
 
 # -- GRAPH BUILDER -- #
 def build_graph():
-    workflow = StateGraph(ReseacherState)
+    workflow = StateGraph(ResearcherState)
     workflow.add_node("planner", planner_node)
     workflow.add_node("search_scraper", search_scraper_node)
     workflow.add_node("evaluator", evaluator_node)
