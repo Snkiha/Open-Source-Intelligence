@@ -45,7 +45,7 @@ for var in ("GOOGLE_API_KEY", "TAVILY_API_KEY"):
         raise EnvironmentError(f"{var} is not set in .env")
 
 # Initialize the Brain
-llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0.2, max_retries=2)
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2, max_retries=2)
 
 async def scrape_deep_content(url):
     async with async_playwright() as p:
