@@ -1,5 +1,4 @@
 import asyncio
-import nest_asyncio
 import os
 import logging
 from datetime import datetime
