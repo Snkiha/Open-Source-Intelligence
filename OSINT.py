@@ -70,7 +70,7 @@ async def scrape_deep_content(url):
             return "" # Empty string if there is error
 
 # Agent State (Agent's Memory)
-class ReseacherState(TypedDict):
+class ResearcherState(TypedDict):
     objective: str
     search_queries: List[str]
     visited_urls: List[str]
@@ -83,7 +83,7 @@ class SearchQueries(BaseModel):
     queries: List[str] = Field(description="A list of 2-3 targeted search queries to find the missing information.")
 
 # Nodes (The "Actors")
-async def planner_node(state: ReseacherState):
+async def planner_node(state: ResearcherState):
     print("\n-- [NODE: PLANNER] Generating Queries --")
     
     # Bind the tool to the LLM to force JSON output
@@ -108,26 +108,39 @@ async def planner_node(state: ReseacherState):
         "iteration_count": state.get("iteration_count", 0) + 1
     }
     
-async def search_scraper_node(state: ReseacherState):
+async def search_scraper_node(state: ResearcherState):
     print("\n-- [NODE: SEARCH & SCRAPE] Gathering data --")
     # Tavily search and the async Playwright script
     client = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
     
     current_data = state.get("scraped_data", "")
     current_urls = state.get("visited_urls", [])
-    new_urls = []
     
+    urls_to_scrape = []
     for query in state["search_queries"]:
         print(f"Searching: {query}")
         results = await client.search(query, max_results=3)
         
         for r in results.get("results", []):
             url = r["url"]
-            if url not in current_urls and url not in new_urls:
+            if url not in current_urls and url not in urls_to_scrape:
                 page_content = await scrape_deep_content(url)
                 current_data += f"\n\n-- SOURCE: {url} --\n{page_content}"
-                new_urls.append(url)
+                urls_to_scrape.append(url)
     
+    tasks = [scrape_deep_content(url) for url in urls_to_scrape]
+    pages = await asyncio.gather(*tasks)
+    
+    new_urls = []
+    for url. page_content in zip(urls_to_scrape, pages):
+        if not page_content:
+            continue
+        if len(current_data) >= MAX_SCRAPED_CHARS:
+            logger.warning("MAX_SCRAPED_CHARS reached. Stopping scrape.")
+            break
+        current_data += f"\n\n-- SOURCE: {url} --\n{page_content}"
+        new_urls.append(url)
+        
     return {
         "scraped_data": current_data,
         "visited_urls": [*current_urls, *new_urls]
@@ -137,8 +150,12 @@ class Evaluation(BaseModel):
     is_complete: bool = Field(description="True if scraped data fully answers the objective. False if information is missing.")
     reasoning: str = Field(description="Why you made this decision.")
 
-async def evaluator_node(state: ReseacherState):
+async def evaluator_node(state: ResearcherState):
     print("\n-- [NODE: EVALUATOR] Analyzing Gaps --")
+    if not state.get("scraped_data", "").strip():
+        logger.info("Evaluator skipped — no data yet.")
+        return {"needs_more_info": True}
+    
     structured_llm = llm.with_structured_output(Evaluation)
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are a quality assurance AI. Check if the scraped data satisfies the objective. Be strict."),
@@ -156,7 +173,7 @@ async def evaluator_node(state: ReseacherState):
     
     return {"needs_more_info": not response.is_complete}
 
-async def reported_node(state: ReseacherState):
+async def reported_node(state: ResearcherState):
     print("\n-- [NODE: REPORTER] Compiling Final Dossier --")
     # TODO: Add LLM prompt to format the raw data into a clean Markdown report
     prompt = ChatPromptTemplate.from_messages([
@@ -176,7 +193,7 @@ async def reported_node(state: ReseacherState):
     return {"final_report": response.content[0]["text"]}
     
 # Routing Logic (The "Brain")
-def should_continue(state: ReseacherState):
+def should_continue(state: ResearcherState):
     print("\n-- [ROUTER] Deciding next steps --")
     
     if state.get("needs_more_info") and state.get("iteration_count", 0) < 3:
@@ -187,7 +204,7 @@ def should_continue(state: ReseacherState):
         return "finish"
 
 # Build and compile the Graph
-workflow = StateGraph(ReseacherState)
+workflow = StateGraph(ResearcherState)
 
 # Register Nodes
 workflow.add_node("planner", planner_node)
