@@ -96,9 +96,9 @@ async def scrape_deep_content(url):
         finally:
             await browser.close()
 
-llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
 # -- NODES -- #
 async def planner_node(state: ResearcherState):
+    llm = ChatGoogleGenerativeAI(model=state["selected_model"], temperature=0.2)
     structured_llm = llm.with_structured_output(SearchQueries)
     
     prompt = ChatPromptTemplate.from_messages([
@@ -156,7 +156,9 @@ async def evaluator_node(state: ResearcherState):
         logger.info("Evaluator skipped — no data yet.")
         return {"needs_more_info": True}
 
+    llm = ChatGoogleGenerativeAI(model=state["selected_model"], temperature=0.2)
     structured_llm = llm.with_structured_output(Evaluation)
+    
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are a quality assurance AI. Check if the scraped data satisfies the objective. Be strict."),
         ("user", "Objective: {objective}\n\nScraped Data:\n{scraped_data}")
@@ -178,7 +180,9 @@ async def reporter_node(state: ResearcherState):
             )),
         ("user", "Objective: {objective}\n\nSource Data:\n{scraped_data}")
     ])
+    llm = ChatGoogleGenerativeAI(model=state["selected_model"], temperature=0.2)
     chain = prompt | llm
+    
     response = await chain.ainvoke({
         "objective": state["objective"],
         "scraped_data": state["scraped_data"]
@@ -276,6 +280,22 @@ st.markdown("Enter a research objective. The agent will autonomously plan, searc
 if not os.getenv("GOOGLE_API_KEY") or not os.getenv("TAVILY_API_KEY"):
     st.error("Missing API Keys! Please ensure GOOGLE_API_KEY and TAVILY_API_KEY are set in your .env or Streamlit Secrets.")
     st.stop()
+    
+# --- NEW: Model Selection UI ---
+col_model, col_empty = st.columns([1, 2])
+with col_model:
+    selected_model = st.selectbox(
+        "Brain Power:",
+        options=[
+            "gemini-3-flash"
+            "gemini-2.5-flash", 
+            "gemini-2.5-pro", 
+            "gemini-1.5-flash", 
+            "gemini-1.5-pro"
+        ],
+        index=0,
+        help="Flash is faster and cheaper. Pro is better at complex reasoning and evaluation."
+    )
 
 objective = st.text_input("Research Objective:", placeholder="e.g., Identify the key capabilities of the BMW M4")
 
