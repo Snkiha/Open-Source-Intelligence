@@ -18,8 +18,8 @@ from tavily import AsyncTavilyClient
 from dotenv import load_dotenv
 import subprocess
 import sys
+import concurrent.futures
 
-nest_asyncio.apply()
 # -- CONFIG & SECRETS -- #
 load_dotenv()
 
@@ -311,7 +311,6 @@ if st.button("Start Research", type="primary"):
                     finally:
                         loop.close()
 
-                import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(run_in_thread, objective, status, (q_metric, u_metric, c_metric))
                     final_report = future.result()
