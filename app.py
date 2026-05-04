@@ -218,12 +218,13 @@ def build_graph():
     return workflow.compile()
 
 # -- ASYNC RUNNER -- #
-async def run_agent_workflow(objective, status_container, metric_containers):
+async def run_agent_workflow(objective, selected_model, status_container, metric_containers):
     q_metric, u_metric, c_metric = metric_containers
     
     app = build_graph()
     initial_state = {
         "objective": objective,
+        "selected_model": selected_model,
         "search_queries": [],
         "visited_urls": [],
         "scraped_data": "",
@@ -331,7 +332,7 @@ if st.button("Start Research", type="primary"):
                     asyncio.set_event_loop(loop)
                     try:
                         return loop.run_until_complete(
-                            run_agent_workflow(objective, selected_model, status, metrics)
+                            run_agent_workflow(objective, status, metrics)
                         )
                     finally:
                         # (Include the cleanup logic from the previous step here)
