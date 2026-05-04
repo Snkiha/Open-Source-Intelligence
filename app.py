@@ -289,7 +289,7 @@ with col_model:
     selected_model = st.selectbox(
         "Brain Power:",
         options=[
-            "gemini-3.0-flash",
+            "gemini-3.1-flash-lite-preview",
             "gemini-2.5-flash", 
             "gemini-2.5-pro", 
             "gemini-1.5-flash", 
