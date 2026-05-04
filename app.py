@@ -170,7 +170,7 @@ async def evaluator_node(state: ResearcherState):
     return {"needs_more_info": not response.is_complete}
 
 async def reporter_node(state: ResearcherState):
-    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0.2)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
             "You are an intelligent analyst. Using only the provided source data, "
@@ -302,11 +302,10 @@ if st.button("Start Research", type="primary"):
         with st.status("Agent initialized. Starting research loop...", expanded=True) as status:
             try:
                 # Pass the metric containers into the runner so it can update them
-                final_report = asyncio.run(run_agent_workflow(
-                    objective, 
-                    status, 
-                    (q_metric, u_metric, c_metric)
-                ))
+                loop = asyncio.get_event_loop()
+                final_report = loop.run_until_complete(
+                    run_agent_workflow(objective, status, (q_metric, u_metric, c_metric))
+                )
                 status.update(label="Research Complete!", state="complete", expanded=False)
             except Exception as e:
                 status.update(label="An error occurred", state="error")
