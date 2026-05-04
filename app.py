@@ -324,7 +324,7 @@ if st.button("Start Research", type="primary"):
                 # --- NEW: Grab the current Streamlit context ---
                 ctx = get_script_run_ctx()
 
-                def run_in_thread(objective, status, metrics):
+                def run_in_thread(objective, model, status, metrics):
                     # --- NEW: Inject the context into this background thread ---
                     add_script_run_ctx(ctx=ctx)
                     
@@ -332,7 +332,7 @@ if st.button("Start Research", type="primary"):
                     asyncio.set_event_loop(loop)
                     try:
                         return loop.run_until_complete(
-                            run_agent_workflow(objective, status, metrics)
+                            run_agent_workflow(objective, model, status, metrics)
                         )
                     finally:
                         # (Include the cleanup logic from the previous step here)
