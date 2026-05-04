@@ -344,7 +344,7 @@ if st.button("Start Research", type="primary"):
                         loop.close()
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(run_in_thread, objective, status, (q_metric, u_metric, c_metric))
+                    future = executor.submit(run_in_thread, objective, selected_model, status, (q_metric, u_metric, c_metric))
                     final_report = future.result()
 
                 status.update(label="Research Complete!", state="complete", expanded=False)
