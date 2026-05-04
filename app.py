@@ -59,6 +59,7 @@ logger = logging.getLogger("osint_agent")
 # -- AGENT STATE & MODELS -- #
 class ResearcherState(TypedDict):
     objective: str
+    selected_model: str
     search_queries: List[str]
     visited_urls: List[str]
     scraped_data: str
