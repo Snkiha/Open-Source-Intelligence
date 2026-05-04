@@ -95,9 +95,9 @@ async def scrape_deep_content(url):
         finally:
             await browser.close()
 
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
 # -- NODES -- #
 async def planner_node(state: ResearcherState):
-    llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", temperature=0.2)
     structured_llm = llm.with_structured_output(SearchQueries)
     
     prompt = ChatPromptTemplate.from_messages([
@@ -155,7 +155,6 @@ async def evaluator_node(state: ResearcherState):
         logger.info("Evaluator skipped — no data yet.")
         return {"needs_more_info": True}
 
-    llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", temperature=0.2)
     structured_llm = llm.with_structured_output(Evaluation)
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are a quality assurance AI. Check if the scraped data satisfies the objective. Be strict."),
@@ -169,7 +168,6 @@ async def evaluator_node(state: ResearcherState):
     return {"needs_more_info": not response.is_complete}
 
 async def reporter_node(state: ResearcherState):
-    llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", temperature=0.2)
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
             "You are an intelligent analyst. Using only the provided source data, "
@@ -304,10 +302,21 @@ if st.button("Start Research", type="primary"):
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
+                        # Run your agent
                         return loop.run_until_complete(
                             run_agent_workflow(objective, status, metrics)
                         )
                     finally:
+                        # Clean up any lingering background tasks (like LangChain's aclose)
+                        pending = asyncio.all_tasks(loop)
+                        for task in pending:
+                            task.cancel()
+                        
+                        # Wait for the cancelled tasks to finish cleaning up
+                        if pending:
+                            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                            
+                        # Safely close the loop
                         loop.close()
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
