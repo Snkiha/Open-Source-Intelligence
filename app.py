@@ -161,7 +161,7 @@ async def evaluator_node(state: ResearcherState):
     structured_llm = llm.with_structured_output(Evaluation)
     
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a quality assurance AI. Check if the scraped data satisfies the objective. Be strict."),
+        ("system", "You are a quality assurance AI. Check if the scraped data satisfies the objective."),
         ("user", "Objective: {objective}\n\nScraped Data:\n{scraped_data}")
     ])
     chain = prompt | structured_llm
@@ -290,10 +290,8 @@ with col_model:
         "Brain Power:",
         options=[
             "gemini-3.1-flash-lite-preview",
-            "gemini-2.5-flash", 
-            "gemini-2.5-pro", 
-            "gemini-1.5-flash", 
-            "gemini-1.5-pro"
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview"
         ],
         index=0,
         help="Flash is faster and cheaper. Pro is better at complex reasoning and evaluation."
