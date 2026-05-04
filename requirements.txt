@@ -8,4 +8,3 @@ tavily-python
 playwright
 playwright-stealth
 python-dotenv
-nest_asyncio
