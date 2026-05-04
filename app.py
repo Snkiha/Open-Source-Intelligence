@@ -161,7 +161,7 @@ async def reporter_node(state: ReseacherState):
         "scraped_data": state["scraped_data"]
     })
     
-    return {"final_report": response.content[0]["textjff"]}
+    return {"final_report": response.content[0]["text"]}
 
 def should_continue(state: ReseacherState):
     if state.get("needs_more_info") and state.get("iteration_count", 0) < 3:
