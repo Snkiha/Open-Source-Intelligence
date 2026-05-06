@@ -171,6 +171,45 @@ async def search_scraper_node(state: ResearcherState):
 
     async def _crawl(u: str, browser):
         domain = urllib.parse.urlparse(u).netloc
+        page = await browser.new_page()async def search_scraper_node(state: ResearcherState):
+    client = AsyncTavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+    current_data = state.get("scraped_data", "")
+    current_urls = state.get("visited_urls", [])
+
+    # -- TAVILY SEARCH --
+    search_tasks = [client.search(q, max_results=5, search_depth="advanced") for q in state["search_queries"]]
+    all_results = await asyncio.gather(*search_tasks)
+
+    urls_to_scrape = []
+    tavily_snippets = {}
+
+    for results in all_results:
+        for r in results.get("results", []):
+            if r.get("score", 0) < 0.5:
+                continue
+            url = r["url"]
+            snippet = r.get("content", "")
+            if snippet:
+                tavily_snippets[url] = snippet
+            if url not in current_urls and url not in urls_to_scrape:
+                urls_to_scrape.append(url)
+
+    # Seed with Tavily snippets immediately — guaranteed content even if scraping fails
+    for url, snippet in tavily_snippets.items():
+        if url not in current_urls:
+            current_data += f"\n\n-- SOURCE (snippet): {url} --\n{snippet}"
+
+    logger.info("Seeded %d Tavily snippets (%d chars total)", len(tavily_snippets), len(current_data))
+
+    # -- PLAYWRIGHT SCRAPING --
+    async def _block_route(route, request):
+        if request.resource_type in ("image", "stylesheet", "font", "media"):
+            await route.abort()
+        else:
+            await route.continue_()
+
+    async def _crawl(u: str, browser):
+        domain = urllib.parse.urlparse(u).netloc
         page = await browser.new_page()
         start = time.perf_counter()
         ok = False
@@ -179,8 +218,16 @@ async def search_scraper_node(state: ResearcherState):
             if _RESOURCE_BLOCKING:
                 await page.route("**/*", _block_route)
             await page.goto(u, wait_until="domcontentloaded", timeout=_URL_TIMEOUT * 1000)
-            await page.wait_for_timeout(500)
+            try:
+                await page.wait_for_function(
+                    "() => document.body.innerText.length > 200",
+                    timeout=5000
+                )
+            except Exception:
+                pass
             content = await page.evaluate("() => document.body.innerText")
+            title = await page.title()
+            logger.info("Scraped %s | title=%s | length=%d", u, title, len(content))
             result = " ".join(content.split())[:MAX_CHARS_PER_PAGE]
             ok = bool(result)
             return u, result
@@ -200,15 +247,29 @@ async def search_scraper_node(state: ResearcherState):
         pages = await asyncio.gather(*[_crawl(url, browser) for url in urls_to_scrape])
         await browser.close()
 
+    # -- MERGE: replace snippets with full page content where scraping succeeded --
     new_urls = []
     for url, page_content in pages:
-        if not page_content:
+        if not page_content or len(page_content) < 300:
+            # Scrape failed or returned almost nothing — snippet already in current_data
+            if url in tavily_snippets and url not in new_urls:
+                new_urls.append(url)
             continue
         if len(current_data) >= MAX_SCRAPED_CHARS:
-            logger.warning("MAX_SCRAPED_CHARS reached. Stopping scrape.")
+            logger.warning("MAX_SCRAPED_CHARS reached. Stopping.")
             break
-        current_data += f"\n\n-- SOURCE: {url} --\n{page_content}"
+        snippet_marker = f"-- SOURCE (snippet): {url} --"
+        if snippet_marker in current_data:
+            # Upgrade snippet to full content
+            current_data = current_data.replace(
+                f"\n\n{snippet_marker}\n{tavily_snippets.get(url, '')}",
+                f"\n\n-- SOURCE: {url} --\n{page_content}"
+            )
+        else:
+            current_data += f"\n\n-- SOURCE: {url} --\n{page_content}"
         new_urls.append(url)
+
+    logger.info("Final scraped_data: %d chars across %d sources", len(current_data), len(new_urls))
 
     return {
         "scraped_data": current_data,
@@ -239,6 +300,11 @@ async def evaluator_node(state: ResearcherState):
 }
 
 async def reporter_node(state: ResearcherState):
+    scraped_data = state.get("scraped_data", "").strip()
+    
+    if not scraped_data:
+        return {"final_report": "⚠️ No data was collected. Try a different objective or check the logs for scraping errors."}
+    
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
             "You are an intelligent analyst. Using only the provided source data, "
