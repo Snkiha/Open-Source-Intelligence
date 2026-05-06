@@ -172,8 +172,9 @@ async def planner_node(state: ResearcherState):
     
     chain = prompt | structured_llm
     response = await chain.ainvoke({
-        "objective": state["objective"],
-        "scraped_data": state["scraped_data"] or "None"
+    "objective": state["objective"],
+    "scraped_data": state["scraped_data"] or "None",
+    "missing_aspects": state.get("missing_aspects") or "None"
     })
     
     return {
@@ -189,11 +190,14 @@ async def search_scraper_node(state: ResearcherState):
 
     # Collect URLs across all queries first
     urls_to_scrape = []
-    for query in state["search_queries"]:
-        results = await client.search(query, max_results=2, search_depth="advanced")
+    search_tasks = [client.search(q, max_results=5, search_depth="advanced") for q in state["search_queries"]]
+    all_results = await asyncio.gather(*search_tasks)
+
+    for results in all_results:
         for r in results.get("results", []):
-            if r.get("results", 0) < 0.5: # drop low-confidence results
-                url = r["url"]
+            if r.get("score", 0) < 0.5:
+                continue
+            url = r["url"]
             if url not in current_urls and url not in urls_to_scrape:
                 urls_to_scrape.append(url)
 
@@ -248,7 +252,7 @@ async def evaluator_node(state: ResearcherState):
     # Skip LLM call if there's nothing to evaluate yet
     if not state.get("scraped_data", "").strip():
         logger.info("Evaluator skipped — no data yet.")
-        return {"needs_more_info": True}
+        return {"needs_more_info": True, "missing_aspects": response.missing_aspects}
 
     llm = ChatGoogleGenerativeAI(model=state["selected_model"], temperature=0.2)
     structured_llm = llm.with_structured_output(Evaluation)
@@ -335,7 +339,8 @@ async def run_agent_workflow(objective, selected_model, status_container, metric
         "needs_more_info": True,
         "final_report": "",
         "iteration_count": 0,
-        "total_queries_run": 0
+        "total_queries_run": 0,
+        "missing_aspects": []
     }
     
     final_report = ""
