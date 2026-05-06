@@ -1,4 +1,5 @@
 import asyncio # Built-in libray to run asyncronous code
+import urllib.parse
 from playwright.async_api import async_playwright # A browser automation library that control the Chrome browser programmatically
 from playwright_stealth import Stealth # A plugin that modifies the browser's fingerprint to look less like a bot
 from typing import TypedDict, List
@@ -39,6 +40,22 @@ logger = logging.getLogger("osint_agent")
 MAX_SCRAPED_CHARS = 80_000 # Hard cap on total scraped data
 MAX_CHARS_PER_PAGE = 15_000 # Max chars taken from any single page
 MAX_ITERATIONS = 3
+# Scraping concurrency controls
+_MAX_SCRAPE_CONCURRENCY = 6
+_MAX_SCRAPE_PER_DOMAIN_CONCURRENCY = 2
+_scrape_semaphore = None
+_domain_semaphores = {}
+
+def _get_global_scrape_semaphore():
+    global _scrape_semaphore
+    if _scrape_semaphore is None:
+        _scrape_semaphore = asyncio.Semaphore(_MAX_SCRAPE_CONCURRENCY)
+    return _scrape_semaphore
+
+def _get_domain_semaphore(domain: str):
+    if domain not in _domain_semaphores:
+        _domain_semaphores[domain] = asyncio.Semaphore(_MAX_SCRAPE_PER_DOMAIN_CONCURRENCY)
+    return _domain_semaphores[domain]
 
 for var in ("GOOGLE_API_KEY", "TAVILY_API_KEY"):
     if not os.getenv(var):
@@ -55,6 +72,17 @@ async def scrape_deep_content(url):
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
+        # Block non-essential resources to speed up scraping
+        async def _block_route(route, request):
+            rt = request.resource_type
+            if rt in ("image", "stylesheet", "font", "media"):
+                await route.abort()
+            else:
+                await route.continue_()
+        try:
+            await page.route("**/*", _block_route)
+        except Exception:
+            pass
         
         # Apply stealth to bypass basic bot detection
         await Stealth().apply_stealth_async(page)
@@ -128,11 +156,23 @@ async def search_scraper_node(state: ResearcherState):
                 current_data += f"\n\n-- SOURCE: {url} --\n{page_content}"
                 urls_to_scrape.append(url)
     
-    tasks = [scrape_deep_content(url) for url in urls_to_scrape]
+    # Concurrency-controlled scraping for all discovered URLs
+    sem_global = _get_global_scrape_semaphore()
+    async def _crawl(u: str):
+        domain = urllib.parse.urlparse(u).netloc
+        dom_sem = _get_domain_semaphore(domain)
+        async with dom_sem:
+            async with sem_global:
+                try:
+                    return await asyncio.wait_for(scrape_deep_content(u), timeout=30)
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout scraping %s after 30s", u)
+                    return ""
+    tasks = [_crawl(url) for url in urls_to_scrape]
     pages = await asyncio.gather(*tasks)
     
     new_urls = []
-    for url. page_content in zip(urls_to_scrape, pages):
+    for url, page_content in zip(urls_to_scrape, pages):
         if not page_content:
             continue
         if len(current_data) >= MAX_SCRAPED_CHARS:
