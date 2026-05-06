@@ -151,7 +151,14 @@ async def planner_node(state: ResearcherState):
     structured_llm = llm.with_structured_output(SearchQueries)
     
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are an expert OSINT researcher. Break down the user's objective into highly targeted web search queries."),
+        ("system", """You are an expert OSINT researcher. Your job is to generate HIGHLY SPECIFIC web search queries.
+        Rules:
+        - Include exact names, model numbers, dates, or identifiers when known
+        - Target authoritative sources (official sites, technical docs, reputable news)
+        - Never generate a query already covered by the data below
+        - Each query must target a DIFFERENT aspect of the objective
+        - Prefer queries that would appear on the page you want (e.g. "BMW M4 0-60 mph" not "BMW M4 performance")
+        """),
         ("user", "Objective: {objective}\nData gathered so far: {scraped_data}\n\nWhat should we search for next?")
     ])
     
