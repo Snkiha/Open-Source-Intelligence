@@ -373,7 +373,7 @@ if not os.getenv("GOOGLE_API_KEY") or not os.getenv("TAVILY_API_KEY"):
     st.error("Missing API Keys! Please ensure GOOGLE_API_KEY and TAVILY_API_KEY are set in your .env or Streamlit Secrets.")
     st.stop()
     
-# --- NEW: Model Selection UI ---
+# --- Model Selection UI ---
 col_model, col_empty = st.columns([1, 2])
 with col_model:
     selected_model = st.selectbox(
@@ -389,51 +389,52 @@ with col_model:
 
 objective = st.text_input("Research Objective:", placeholder="e.g., Identify the key capabilities of the BMW M4")
 
+st.divider()
+
+# 1. MOVED OUTSIDE: Show the adjusters before the button is pressed
+st.subheader("Scrape Tuning (per-run knobs)")
+col_a, col_b = st.columns(2)
+with col_a:
+    ui_global = st.number_input("Global concurrency", min_value=1, max_value=20, value=_MAX_SCRAPE_CONCURRENCY, key="ui_global_concurrency")
+    ui_domain = st.number_input("Per-domain concurrency", min_value=1, max_value=20, value=_MAX_SCRAPE_PER_DOMAIN_CONCURRENCY, key="ui_domain_concurrency")
+with col_b:
+    ui_timeout = st.number_input("Per-URL timeout (s)", min_value=5, max_value=120, value=_URL_TIMEOUT, key="ui_timeout")
+    ui_retries = st.number_input("Max retries per URL", min_value=0, max_value=5, value=_MAX_RETRIES, key="ui_max_retries")
+ui_block = st.checkbox("Block heavy resources (images, css, fonts)", value=_RESOURCE_BLOCKING, key="ui_resource_blocking")
+
+def _refresh_scrape_config_from_ui():
+    global _MAX_SCRAPE_CONCURRENCY, _MAX_SCRAPE_PER_DOMAIN_CONCURRENCY, _URL_TIMEOUT, _MAX_RETRIES, _RESOURCE_BLOCKING
+    _MAX_SCRAPE_CONCURRENCY = int(ui_global)
+    _MAX_SCRAPE_PER_DOMAIN_CONCURRENCY = int(ui_domain)
+    _URL_TIMEOUT = int(ui_timeout)
+    _MAX_RETRIES = int(ui_retries)
+    _RESOURCE_BLOCKING = bool(ui_block)
+
+# 2. THE BUTTON BLOCK
 if st.button("Start Research", type="primary"):
     if not objective.strip():
         st.warning("Please enter an objective first.")
     else:
-        st.divider()
-        # Scrape tuning UI (per-run knobs)
-        st.subheader("Scrape Tuning (per-run knobs)")
-        col_a, col_b = st.columns(2)
-        with col_a:
-            ui_global = st.number_input("Global concurrency", min_value=1, max_value=20, value=_MAX_SCRAPE_CONCURRENCY, key="ui_global_concurrency")
-            ui_domain = st.number_input("Per-domain concurrency", min_value=1, max_value=20, value=_MAX_SCRAPE_PER_DOMAIN_CONCURRENCY, key="ui_domain_concurrency")
-        with col_b:
-            ui_timeout = st.number_input("Per-URL timeout (s)", min_value=5, max_value=120, value=_URL_TIMEOUT, key="ui_timeout")
-            ui_retries = st.number_input("Max retries per URL", min_value=0, max_value=5, value=_MAX_RETRIES, key="ui_max_retries")
-        ui_block = st.checkbox("Block heavy resources (images, css, fonts)", value=_RESOURCE_BLOCKING, key="ui_resource_blocking")
+        # Apply the knob settings right as we click start
+        _refresh_scrape_config_from_ui()
 
-        def _refresh_scrape_config_from_ui():
-            global _MAX_SCRAPE_CONCURRENCY, _MAX_SCRAPE_PER_DOMAIN_CONCURRENCY, _URL_TIMEOUT, _MAX_RETRIES, _RESOURCE_BLOCKING
-            _MAX_SCRAPE_CONCURRENCY = int(ui_global)
-            _MAX_SCRAPE_PER_DOMAIN_CONCURRENCY = int(ui_domain)
-            _URL_TIMEOUT = int(ui_timeout)
-            _MAX_RETRIES = int(ui_retries)
-            _RESOURCE_BLOCKING = bool(ui_block)
-        
-        # --- NEW: Metric placeholders ---
+        # Keep the metric placeholders in here so they appear when the run starts
         col1, col2, col3 = st.columns(3)
         q_metric = col1.empty()
         u_metric = col2.empty()
         c_metric = col3.empty()
         
-        # Initialize at zero
         q_metric.metric("Queries Run", 0)
         u_metric.metric("Sites Scraped", 0)
         c_metric.metric("Chars Collected", 0)
-        # --------------------------------
         
         with st.status("Agent initialized. Starting research loop...", expanded=True) as status:
             try:
-                # --- NEW: Grab the current Streamlit context ---
+                # Grab the current Streamlit context
                 ctx = get_script_run_ctx()
 
                 def run_in_thread(objective, model, status, metrics):
-                    # --- NEW: Inject the context into this background thread ---
                     add_script_run_ctx(ctx=ctx)
-                    
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
@@ -441,7 +442,6 @@ if st.button("Start Research", type="primary"):
                             run_agent_workflow(objective, model, status, metrics)
                         )
                     finally:
-                        # (Include the cleanup logic from the previous step here)
                         pending = asyncio.all_tasks(loop)
                         for task in pending:
                             task.cancel()
@@ -453,9 +453,6 @@ if st.button("Start Research", type="primary"):
                     future = executor.submit(run_in_thread, objective, selected_model, status, (q_metric, u_metric, c_metric))
                     final_report = future.result()
 
-                # To apply any UI-configured knobs for the upcoming runs, refresh config
-                _refresh_scrape_config_from_ui()
-
                 status.update(label="Research Complete!", state="complete", expanded=False)
             except Exception as e:
                 status.update(label="An error occurred", state="error")
@@ -463,7 +460,6 @@ if st.button("Start Research", type="primary"):
                 final_report = None
         
         if final_report:
-            # Show domain metrics if available
             def render_domain_metrics():
                 if _DOMAIN_LATENCY_SUM:
                     st.subheader("Domain Metrics")
