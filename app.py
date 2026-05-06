@@ -151,31 +151,6 @@ async def search_scraper_node(state: ResearcherState):
     current_data = state.get("scraped_data", "")
     current_urls = state.get("visited_urls", [])
 
-    search_tasks = [client.search(q, max_results=5, search_depth="advanced") for q in state["search_queries"]]
-    all_results = await asyncio.gather(*search_tasks)
-
-    urls_to_scrape = []
-    for results in all_results:
-        for r in results.get("results", []):
-            if r.get("score", 0) < 0.5:
-                continue
-            url = r["url"]
-            if url not in current_urls and url not in urls_to_scrape:
-                urls_to_scrape.append(url)
-
-    async def _block_route(route, request):
-        if request.resource_type in ("image", "stylesheet", "font", "media"):
-            await route.abort()
-        else:
-            await route.continue_()
-
-    async def _crawl(u: str, browser):
-        domain = urllib.parse.urlparse(u).netloc
-        page = await browser.new_page()async def search_scraper_node(state: ResearcherState):
-    client = AsyncTavilyClient(api_key=os.environ["TAVILY_API_KEY"])
-    current_data = state.get("scraped_data", "")
-    current_urls = state.get("visited_urls", [])
-
     # -- TAVILY SEARCH --
     search_tasks = [client.search(q, max_results=5, search_depth="advanced") for q in state["search_queries"]]
     all_results = await asyncio.gather(*search_tasks)
