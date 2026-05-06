@@ -109,43 +109,6 @@ class Evaluation(BaseModel):
     missing_aspects: List[str] = Field(description="Specific pieces of information still needed. Empty if complete.")
 
 # -- HELPER FUNCTIONS -- #
-async def scrape_deep_content(url):
-    domain = urllib.parse.urlparse(url).netloc
-    dom_sem = _get_domain_semaphore(domain)
-    glob_sem = _get_global_scrape_semaphore()
-    async with dom_sem:
-        async with glob_sem:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-                )
-                page = await context.new_page()
-                # Block non-essential resources to speed up scraping (configurable)
-                if _RESOURCE_BLOCKING:
-                    async def _block_route(route, request):
-                        rt = request.resource_type
-                        if rt in ("image", "stylesheet", "font", "media"):
-                            await route.abort()
-                        else:
-                            await route.continue_()
-                    try:
-                        await page.route("**/*", _block_route)
-                    except Exception:
-                        pass
-                # Apply stealth to bypass basic bot detection
-                await Stealth().apply_stealth_async(page)
-                try:
-                    logger.info("Scraping: %s", url)
-                    await page.goto(url, wait_until="networkidle", timeout=60_000)
-                    content = await page.evaluate("() => document.body.innerText")
-                    clean = " ".join(content.split())
-                    return clean[:MAX_CHARS_PER_PAGE]
-                except Exception as exc:
-                    logger.warning("Failed to scrape %s: %s", url, exc)
-                    return ""
-                finally:
-                    await browser.close()
 
 # -- NODES -- #
 async def planner_node(state: ResearcherState):
@@ -188,11 +151,10 @@ async def search_scraper_node(state: ResearcherState):
     current_data = state.get("scraped_data", "")
     current_urls = state.get("visited_urls", [])
 
-    # Collect URLs across all queries first
-    urls_to_scrape = []
     search_tasks = [client.search(q, max_results=5, search_depth="advanced") for q in state["search_queries"]]
     all_results = await asyncio.gather(*search_tasks)
 
+    urls_to_scrape = []
     for results in all_results:
         for r in results.get("results", []):
             if r.get("score", 0) < 0.5:
@@ -201,37 +163,42 @@ async def search_scraper_node(state: ResearcherState):
             if url not in current_urls and url not in urls_to_scrape:
                 urls_to_scrape.append(url)
 
-    # Scrape all URLs concurrently with per-domain and global limits (with retries)
-    sem_global = _get_global_scrape_semaphore()
-    async def _crawl(u: str):
+    async def _block_route(route, request):
+        if request.resource_type in ("image", "stylesheet", "font", "media"):
+            await route.abort()
+        else:
+            await route.continue_()
+
+    async def _crawl(u: str, browser):
         domain = urllib.parse.urlparse(u).netloc
-        dom_sem = _get_domain_semaphore(domain)
-        async with dom_sem:
-            async with sem_global:
-                # Retry loop with simple exponential backoff
-                for attempt in range(_MAX_RETRIES + 1):
-                    start = time.perf_counter()
-                    try:
-                        content = await asyncio.wait_for(scrape_deep_content(u), timeout=_URL_TIMEOUT)
-                        ok = bool(content)
-                    except asyncio.TimeoutError:
-                        logger.warning("Timeout scraping %s on attempt %d", u, attempt + 1)
-                        content = ""
-                        ok = False
-                    finally:
-                        elapsed = (time.perf_counter() - start) * 1000
-                        # Update domain metrics
-                        _DOMAIN_LATENCY_SUM[domain] = _DOMAIN_LATENCY_SUM.get(domain, 0) + elapsed
-                        _DOMAIN_LATENCY_COUNT[domain] = _DOMAIN_LATENCY_COUNT.get(domain, 0) + 1
-                        _DOMAIN_TOTAL[domain] = _DOMAIN_TOTAL.get(domain, 0) + 1
-                        _DOMAIN_SUCCESS[domain] = _DOMAIN_SUCCESS.get(domain, 0) + (1 if ok else 0)
-                    if content:
-                        break
-                    if attempt < _MAX_RETRIES:
-                        await asyncio.sleep(2 ** attempt)
-                return u, content
-    tasks = [_crawl(url) for url in urls_to_scrape]
-    pages = await asyncio.gather(*tasks)
+        page = await browser.new_page()
+        start = time.perf_counter()
+        ok = False
+        try:
+            await Stealth().apply_stealth_async(page)
+            if _RESOURCE_BLOCKING:
+                await page.route("**/*", _block_route)
+            await page.goto(u, wait_until="domcontentloaded", timeout=_URL_TIMEOUT * 1000)
+            await page.wait_for_timeout(500)
+            content = await page.evaluate("() => document.body.innerText")
+            result = " ".join(content.split())[:MAX_CHARS_PER_PAGE]
+            ok = bool(result)
+            return u, result
+        except Exception as exc:
+            logger.warning("Failed to scrape %s: %s", u, exc)
+            return u, ""
+        finally:
+            elapsed = (time.perf_counter() - start) * 1000
+            _DOMAIN_LATENCY_SUM[domain] = _DOMAIN_LATENCY_SUM.get(domain, 0) + elapsed
+            _DOMAIN_LATENCY_COUNT[domain] = _DOMAIN_LATENCY_COUNT.get(domain, 0) + 1
+            _DOMAIN_TOTAL[domain] = _DOMAIN_TOTAL.get(domain, 0) + 1
+            _DOMAIN_SUCCESS[domain] = _DOMAIN_SUCCESS.get(domain, 0) + (1 if ok else 0)
+            await page.close()
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        pages = await asyncio.gather(*[_crawl(url, browser) for url in urls_to_scrape])
+        await browser.close()
 
     new_urls = []
     for url, page_content in pages:
