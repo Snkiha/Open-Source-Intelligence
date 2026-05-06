@@ -184,7 +184,8 @@ async def search_scraper_node(state: ResearcherState):
     for query in state["search_queries"]:
         results = await client.search(query, max_results=2)
         for r in results.get("results", []):
-            url = r["url"]
+            if r.get("results", 0) < 0.5: # drop low-confidence results
+                url = r["url"]
             if url not in current_urls and url not in urls_to_scrape:
                 urls_to_scrape.append(url)
 
