@@ -1,4 +1,5 @@
 import asyncio
+import time
 import urllib.parse
 import os
 import logging
@@ -47,6 +48,16 @@ _MAX_SCRAPE_CONCURRENCY = 6
 _MAX_SCRAPE_PER_DOMAIN_CONCURRENCY = 2
 _scrape_semaphore = None
 _domain_semaphores = {}
+
+# Runtime scrapers metrics (domain-level latency and success rates)
+_DOMAIN_LATENCY_SUM = {}
+_DOMAIN_LATENCY_COUNT = {}
+_DOMAIN_TOTAL = {}
+_DOMAIN_SUCCESS = {}
+
+_URL_TIMEOUT = 30  # seconds (configurable via UI)
+_RESOURCE_BLOCKING = True
+_MAX_RETRIES = 2
 
 def _get_global_scrape_semaphore():
     global _scrape_semaphore
@@ -108,17 +119,18 @@ async def scrape_deep_content(url):
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
                 )
                 page = await context.new_page()
-                # Block non-essential resources to speed up scraping
-                async def _block_route(route, request):
-                    rt = request.resource_type
-                    if rt in ("image", "stylesheet", "font", "media"):
-                        await route.abort()
-                    else:
-                        await route.continue_()
-                try:
-                    await page.route("**/*", _block_route)
-                except Exception:
-                    pass
+                # Block non-essential resources to speed up scraping (configurable)
+                if _RESOURCE_BLOCKING:
+                    async def _block_route(route, request):
+                        rt = request.resource_type
+                        if rt in ("image", "stylesheet", "font", "media"):
+                            await route.abort()
+                        else:
+                            await route.continue_()
+                    try:
+                        await page.route("**/*", _block_route)
+                    except Exception:
+                        pass
                 # Apply stealth to bypass basic bot detection
                 await Stealth().apply_stealth_async(page)
                 try:
@@ -169,19 +181,35 @@ async def search_scraper_node(state: ResearcherState):
             if url not in current_urls and url not in urls_to_scrape:
                 urls_to_scrape.append(url)
 
-    # Scrape all URLs concurrently with per-domain and global limits
+    # Scrape all URLs concurrently with per-domain and global limits (with retries)
     sem_global = _get_global_scrape_semaphore()
     async def _crawl(u: str):
         domain = urllib.parse.urlparse(u).netloc
         dom_sem = _get_domain_semaphore(domain)
         async with dom_sem:
             async with sem_global:
-                try:
-                    content = await asyncio.wait_for(scrape_deep_content(u), timeout=30)
-                    return u, content
-                except asyncio.TimeoutError:
-                    logger.warning("Timeout scraping %s after 30s", u)
-                    return u, ""
+                # Retry loop with simple exponential backoff
+                for attempt in range(_MAX_RETRIES + 1):
+                    start = time.perf_counter()
+                    try:
+                        content = await asyncio.wait_for(scrape_deep_content(u), timeout=_URL_TIMEOUT)
+                        ok = bool(content)
+                    except asyncio.TimeoutError:
+                        logger.warning("Timeout scraping %s on attempt %d", u, attempt + 1)
+                        content = ""
+                        ok = False
+                    finally:
+                        elapsed = (time.perf_counter() - start) * 1000
+                        # Update domain metrics
+                        _DOMAIN_LATENCY_SUM[domain] = _DOMAIN_LATENCY_SUM.get(domain, 0) + elapsed
+                        _DOMAIN_LATENCY_COUNT[domain] = _DOMAIN_LATENCY_COUNT.get(domain, 0) + 1
+                        _DOMAIN_TOTAL[domain] = _DOMAIN_TOTAL.get(domain, 0) + 1
+                        _DOMAIN_SUCCESS[domain] = _DOMAIN_SUCCESS.get(domain, 0) + (1 if ok else 0)
+                    if content:
+                        break
+                    if attempt < _MAX_RETRIES:
+                        await asyncio.sleep(2 ** attempt)
+                return u, content
     tasks = [_crawl(url) for url in urls_to_scrape]
     pages = await asyncio.gather(*tasks)
 
@@ -353,6 +381,24 @@ if st.button("Start Research", type="primary"):
         st.warning("Please enter an objective first.")
     else:
         st.divider()
+        # Scrape tuning UI (per-run knobs)
+        st.subheader("Scrape Tuning (per-run knobs)")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            ui_global = st.number_input("Global concurrency", min_value=1, max_value=20, value=_MAX_SCRAPE_CONCURRENCY, key="ui_global_concurrency")
+            ui_domain = st.number_input("Per-domain concurrency", min_value=1, max_value=20, value=_MAX_SCRAPE_PER_DOMAIN_CONCURRENCY, key="ui_domain_concurrency")
+        with col_b:
+            ui_timeout = st.number_input("Per-URL timeout (s)", min_value=5, max_value=120, value=_URL_TIMEOUT, key="ui_timeout")
+            ui_retries = st.number_input("Max retries per URL", min_value=0, max_value=5, value=_MAX_RETRIES, key="ui_max_retries")
+        ui_block = st.checkbox("Block heavy resources (images, css, fonts)", value=_RESOURCE_BLOCKING, key="ui_resource_blocking")
+
+        def _refresh_scrape_config_from_ui():
+            global _MAX_SCRAPE_CONCURRENCY, _MAX_SCRAPE_PER_DOMAIN_CONCURRENCY, _URL_TIMEOUT, _MAX_RETRIES, _RESOURCE_BLOCKING
+            _MAX_SCRAPE_CONCURRENCY = int(ui_global)
+            _MAX_SCRAPE_PER_DOMAIN_CONCURRENCY = int(ui_domain)
+            _URL_TIMEOUT = int(ui_timeout)
+            _MAX_RETRIES = int(ui_retries)
+            _RESOURCE_BLOCKING = bool(ui_block)
         
         # --- NEW: Metric placeholders ---
         col1, col2, col3 = st.columns(3)
@@ -394,6 +440,9 @@ if st.button("Start Research", type="primary"):
                     future = executor.submit(run_in_thread, objective, selected_model, status, (q_metric, u_metric, c_metric))
                     final_report = future.result()
 
+                # To apply any UI-configured knobs for the upcoming runs, refresh config
+                _refresh_scrape_config_from_ui()
+
                 status.update(label="Research Complete!", state="complete", expanded=False)
             except Exception as e:
                 status.update(label="An error occurred", state="error")
@@ -401,6 +450,18 @@ if st.button("Start Research", type="primary"):
                 final_report = None
         
         if final_report:
+            # Show domain metrics if available
+            def render_domain_metrics():
+                if _DOMAIN_LATENCY_SUM:
+                    st.subheader("Domain Metrics")
+                    for domain in sorted(_DOMAIN_LATENCY_SUM.keys()):
+                        total = _DOMAIN_TOTAL.get(domain, 0)
+                        cnt = _DOMAIN_LATENCY_COUNT.get(domain, 1)
+                        avg = _DOMAIN_LATENCY_SUM.get(domain, 0) / cnt if cnt else 0
+                        succ = _DOMAIN_SUCCESS.get(domain, 0)
+                        rate = succ / total if total > 0 else 0
+                        st.text(f"{domain}: avg {avg:.0f} ms, success {rate:.0%} ({succ}/{total})")
+            render_domain_metrics()
             st.subheader("Final Report")
             st.markdown(final_report)
             
