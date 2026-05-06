@@ -59,17 +59,6 @@ _URL_TIMEOUT = 30  # seconds (configurable via UI)
 _RESOURCE_BLOCKING = True
 _MAX_RETRIES = 2
 
-def _get_global_scrape_semaphore():
-    global _scrape_semaphore
-    if _scrape_semaphore is None:
-        _scrape_semaphore = asyncio.Semaphore(_MAX_SCRAPE_CONCURRENCY)
-    return _scrape_semaphore
-
-def _get_domain_semaphore(domain: str):
-    if domain not in _domain_semaphores:
-        _domain_semaphores[domain] = asyncio.Semaphore(_MAX_SCRAPE_PER_DOMAIN_CONCURRENCY)
-    return _domain_semaphores[domain]
-
 # -- LOGGING -- #
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
@@ -202,12 +191,13 @@ async def search_scraper_node(state: ResearcherState):
                 pass
             content = await page.evaluate("() => document.body.innerText")
             title = await page.title()
-            logger.info("Scraped %s | title=%s | length=%d", u, title, len(content))
             result = " ".join(content.split())[:MAX_CHARS_PER_PAGE]
             ok = bool(result)
+            logger.info("SUCCESS %s | title=%s | chars=%d", u, title, len(result))
             return u, result
         except Exception as exc:
-            logger.warning("Failed to scrape %s: %s", u, exc)
+            # Log the actual exception type so we know what's failing
+            logger.warning("FAILED %s | %s: %s", u, type(exc).__name__, exc)
             return u, ""
         finally:
             elapsed = (time.perf_counter() - start) * 1000
