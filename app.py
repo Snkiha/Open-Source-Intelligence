@@ -252,7 +252,7 @@ async def evaluator_node(state: ResearcherState):
     # Skip LLM call if there's nothing to evaluate yet
     if not state.get("scraped_data", "").strip():
         logger.info("Evaluator skipped — no data yet.")
-        return {"needs_more_info": True, "missing_aspects": response.missing_aspects}
+        return {"needs_more_info": True, "missing_aspects": []}
 
     llm = ChatGoogleGenerativeAI(model=state["selected_model"], temperature=0.2)
     structured_llm = llm.with_structured_output(Evaluation)
@@ -266,7 +266,10 @@ async def evaluator_node(state: ResearcherState):
         "objective": state["objective"],
         "scraped_data": state["scraped_data"]
     })
-    return {"needs_more_info": not response.is_complete}
+    return {
+    "needs_more_info": not response.is_complete,
+    "missing_aspects": response.missing_aspects
+}
 
 async def reporter_node(state: ResearcherState):
     prompt = ChatPromptTemplate.from_messages([
