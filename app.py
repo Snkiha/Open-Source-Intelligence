@@ -96,6 +96,7 @@ class ResearcherState(TypedDict):
     final_report: str
     iteration_count: int
     total_queries_run: int # NEW: Added to track all historical queries
+    missing_aspects: List[str]
     _SCRAPE_CONCURRENCY = 6
     _SCRAPE_PER_DOMAIN_CONCURRENCY = 2
 
@@ -105,6 +106,7 @@ class SearchQueries(BaseModel):
 class Evaluation(BaseModel):
     is_complete: bool = Field(description="True if scraped data fully answers the objective. False if information is missing.")
     reasoning: str = Field(description="Why you made this decision.")
+    missing_aspects: List[str] = Field(description="Specific pieces of information still needed. Empty if complete.")
 
 # -- HELPER FUNCTIONS -- #
 async def scrape_deep_content(url):
@@ -159,7 +161,13 @@ async def planner_node(state: ResearcherState):
         - Each query must target a DIFFERENT aspect of the objective
         - Prefer queries that would appear on the page you want (e.g. "BMW M4 0-60 mph" not "BMW M4 performance")
         """),
-        ("user", "Objective: {objective}\nData gathered so far: {scraped_data}\n\nWhat should we search for next?")
+        ("user", """Objective: {objective}
+
+        Data gathered so far: {scraped_data}
+
+        Still missing (from evaluator): {missing_aspects}
+
+        Generate queries SPECIFICALLY targeting the missing aspects above.""")
     ])
     
     chain = prompt | structured_llm
@@ -182,7 +190,7 @@ async def search_scraper_node(state: ResearcherState):
     # Collect URLs across all queries first
     urls_to_scrape = []
     for query in state["search_queries"]:
-        results = await client.search(query, max_results=2)
+        results = await client.search(query, max_results=2, search_depth="advanced")
         for r in results.get("results", []):
             if r.get("results", 0) < 0.5: # drop low-confidence results
                 url = r["url"]
