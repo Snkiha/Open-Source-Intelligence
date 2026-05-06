@@ -43,6 +43,10 @@ if not os.getenv("TAVILY_API_KEY") and "TAVILY_API_KEY" in st.secrets:
 MAX_SCRAPED_CHARS = 80_000
 MAX_CHARS_PER_PAGE = 15_000
 
+# Concurrency controls for scraping
+_MAX_SCRAPE_CONCURRENCY = 6
+_MAX_SCRAPE_PER_DOMAIN_CONCURRENCY = 2
+
 # Runtime scrapers metrics (domain-level latency and success rates)
 _DOMAIN_LATENCY_SUM = {}
 _DOMAIN_LATENCY_COUNT = {}
