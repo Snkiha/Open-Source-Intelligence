@@ -480,17 +480,6 @@ if st.button("Start Research", type="primary"):
                 final_report = None
         
         if final_report:
-            def render_domain_metrics():
-                if _DOMAIN_LATENCY_SUM:
-                    st.subheader("Domain Metrics")
-                    for domain in sorted(_DOMAIN_LATENCY_SUM.keys()):
-                        total = _DOMAIN_TOTAL.get(domain, 0)
-                        cnt = _DOMAIN_LATENCY_COUNT.get(domain, 1)
-                        avg = _DOMAIN_LATENCY_SUM.get(domain, 0) / cnt if cnt else 0
-                        succ = _DOMAIN_SUCCESS.get(domain, 0)
-                        rate = succ / total if total > 0 else 0
-                        st.text(f"{domain}: avg {avg:.0f} ms, success {rate:.0%} ({succ}/{total})")
-            render_domain_metrics()
             st.subheader("Final Report")
             st.markdown(final_report)
             
