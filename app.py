@@ -325,7 +325,7 @@ async def run_agent_workflow(objective, selected_model, status_container, metric
                 avg = _DOMAIN_LATENCY_SUM.get(domain, 0) / cnt if cnt else 0
                 succ = _DOMAIN_SUCCESS.get(domain, 0)
                 rate = succ / total if total > 0 else 0
-                status.write(f"- {domain}: avg {avg:.0f} ms, success {rate:.0%} ({succ}/{total})")
+                status.write(f"- {domain}")
     q_metric, u_metric, c_metric = metric_containers
     
     app = build_graph()
