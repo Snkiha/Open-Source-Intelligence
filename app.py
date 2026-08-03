@@ -316,16 +316,16 @@ def build_graph():
 # -- ASYNC RUNNER -- #
 async def run_agent_workflow(objective, selected_model, status_container, metric_containers):
     # Inline live-domain-metrics renderer
-    def _render_domain_metrics_inline(status):
-        if _DOMAIN_LATENCY_SUM:
-            status.write("Domain Metrics:")
-            for domain in sorted(_DOMAIN_LATENCY_SUM.keys()):
-                total = _DOMAIN_TOTAL.get(domain, 0)
-                cnt = _DOMAIN_LATENCY_COUNT.get(domain, 1)
-                avg = _DOMAIN_LATENCY_SUM.get(domain, 0) / cnt if cnt else 0
-                succ = _DOMAIN_SUCCESS.get(domain, 0)
-                rate = succ / total if total > 0 else 0
-                status.write(f"- {domain}")
+    # def _render_domain_metrics_inline(status):
+    #     if _DOMAIN_LATENCY_SUM:
+    #         status.write("Domain Metrics:")
+    #         for domain in sorted(_DOMAIN_LATENCY_SUM.keys()):
+    #             total = _DOMAIN_TOTAL.get(domain, 0)
+    #             cnt = _DOMAIN_LATENCY_COUNT.get(domain, 1)
+    #             avg = _DOMAIN_LATENCY_SUM.get(domain, 0) / cnt if cnt else 0
+    #             succ = _DOMAIN_SUCCESS.get(domain, 0)
+    #             rate = succ / total if total > 0 else 0
+    #             status.write(f"- {domain}")
     q_metric, u_metric, c_metric = metric_containers
     
     app = build_graph()
@@ -365,7 +365,7 @@ async def run_agent_workflow(objective, selected_model, status_container, metric
             c_metric.metric("Chars Collected", current_chars)
             # ---------------------------------
             # Live domain metrics - show during research
-            _render_domain_metrics_inline(status_container)
+            # _render_domain_metrics_inline(status_container)
 
             if node_name == "planner":
                 status_container.write(f"🧠 **Planner generated queries:** {', '.join(state_update.get('search_queries', []))}")
