@@ -51,7 +51,7 @@ def _load_secret(name: str) -> None:
     if value:
         os.environ[name] = str(value)
 
-for _secret_name in ("GOOGLE_API_KEY", "BRAVE_API_KEY", "JINA_API_KEY"):
+for _secret_name in ("GOOGLE_API_KEY", "JINA_API_KEY"):
     _load_secret(_secret_name)
 
 MAX_SCRAPED_CHARS = 80_000
@@ -86,9 +86,13 @@ _MAX_API_CONCURRENCY = 3
 _API_RETRY_DELAY = 2.0  # seconds to back off after a 429
 _MAX_API_ATTEMPTS = 2
 
-# Brave Search free tier is capped at 1 request/second
-_BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
-_BRAVE_RATE_LIMIT_DELAY = 1.1  # seconds between sequential Brave requests
+# -- SEARCH (Jina Search) --
+# Unlike the reader endpoint, s.jina.ai rejects unauthenticated requests, so
+# JINA_API_KEY is required for the agent to discover any URLs at all.
+_JINA_SEARCH_URL = "https://s.jina.ai/"
+_SEARCH_RATE_LIMIT_DELAY = 0.5  # seconds between sequential search requests
+_SEARCH_RESULT_LIMIT = 5  # results kept per query
+_SEARCH_TIMEOUT = 60  # seconds — search runs a live crawl server-side
 
 # -- LOGGING -- #
 LOG_DIR = Path("logs")
@@ -128,18 +132,69 @@ class Evaluation(BaseModel):
     missing_aspects: List[str] = Field(description="Specific pieces of information still needed. Empty if complete.")
 
 # -- HELPER FUNCTIONS -- #
-async def _brave_search(http_client: httpx.AsyncClient, query: str, count: int = 5) -> dict:
-    response = await http_client.get(
-        _BRAVE_SEARCH_URL,
-        params={"q": query, "count": count},
-        headers={
-            "Accept": "application/json",
-            "Accept-Encoding": "gzip",
-            "X-Subscription-Token": os.environ["BRAVE_API_KEY"],
-        },
-    )
-    response.raise_for_status()
-    return response.json()
+def _jina_headers(extra: dict | None = None) -> dict:
+    """Shared Jina auth header. The reader works without a key; search does not."""
+    headers = {"Accept": "application/json", **(extra or {})}
+    api_key = os.getenv("JINA_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+async def _jina_search(http_client: httpx.AsyncClient, query: str) -> list[dict]:
+    """Run one web search. Returns a normalised [{url, description}], [] on failure."""
+    headers = _jina_headers({"X-Respond-With": "no-content"})
+
+    for attempt in range(_MAX_API_ATTEMPTS):
+        try:
+            response = await http_client.get(
+                _JINA_SEARCH_URL,
+                params={"q": query},
+                headers=headers,
+                timeout=_SEARCH_TIMEOUT,
+            )
+            if response.status_code == 429:
+                logger.warning(
+                    "SEARCH RATE LIMITED %r (attempt %d/%d)",
+                    query, attempt + 1, _MAX_API_ATTEMPTS
+                )
+                await asyncio.sleep(_API_RETRY_DELAY)
+                continue
+            response.raise_for_status()
+            payload = response.json()
+            break
+        except httpx.HTTPError as exc:
+            logger.warning("Search failed for %r | %s: %s", query, type(exc).__name__, exc)
+            return []
+        except ValueError as exc:
+            logger.warning("Search returned non-JSON for %r | %s", query, exc)
+            return []
+    else:
+        return []
+
+    results = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        logger.warning(
+            "Search returned no results for %r | %s",
+            query, payload.get("readableMessage", payload) if isinstance(payload, dict) else payload
+        )
+        return []
+
+    normalised = []
+    for item in results:
+        if len(normalised) >= _SEARCH_RESULT_LIMIT:
+            break
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url")
+        if not url:
+            continue
+        normalised.append({
+            "url": url,
+            "description": item.get("description") or item.get("content") or "",
+        })
+    logger.info("Search %r returned %d results", query, len(normalised))
+    return normalised
 
 
 def _normalise(text: str) -> str:
@@ -148,10 +203,7 @@ def _normalise(text: str) -> str:
 
 async def _scrape_via_api(http_client: httpx.AsyncClient, url: str) -> str:
     """Fetch a page through the Jina reader API. Returns "" when it is unavailable."""
-    headers = {"Accept": "text/plain", "X-Return-Format": "text"}
-    api_key = os.getenv("JINA_API_KEY")
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    headers = _jina_headers({"Accept": "text/plain", "X-Return-Format": "text"})
 
     for attempt in range(_MAX_API_ATTEMPTS):
         try:
@@ -211,22 +263,19 @@ async def search_scraper_node(state: ResearcherState):
     current_data = state.get("scraped_data", "")
     current_urls = state.get("visited_urls", [])
 
-    # -- BRAVE SEARCH -- (sequential to respect the free tier's 1 req/sec cap)
+    # -- WEB SEARCH -- (sequential to stay well inside the rate limit)
     all_results = []
-    async with httpx.AsyncClient(timeout=15) as http_client:
+    async with httpx.AsyncClient(timeout=_SEARCH_TIMEOUT) as http_client:
         for i, q in enumerate(state["search_queries"]):
             if i > 0:
-                await asyncio.sleep(_BRAVE_RATE_LIMIT_DELAY)
-            try:
-                all_results.append(await _brave_search(http_client, q, count=5))
-            except httpx.HTTPError as exc:
-                logger.warning("Brave search failed for %r | %s: %s", q, type(exc).__name__, exc)
+                await asyncio.sleep(_SEARCH_RATE_LIMIT_DELAY)
+            all_results.append(await _jina_search(http_client, q))
 
     urls_to_scrape = []
     search_snippets = {}
 
     for results in all_results:
-        for r in results.get("web", {}).get("results", []):
+        for r in results:
             url = r.get("url")
             if not url:
                 continue
@@ -236,12 +285,12 @@ async def search_scraper_node(state: ResearcherState):
             if url not in current_urls and url not in urls_to_scrape:
                 urls_to_scrape.append(url)
 
-    # Seed with Brave snippets immediately — guaranteed content even if scraping fails
+    # Seed with search snippets immediately — guaranteed content even if scraping fails
     for url, snippet in search_snippets.items():
         if url not in current_urls:
             current_data += f"\n\n-- SOURCE (snippet): {url} --\n{snippet}"
 
-    logger.info("Seeded %d Brave snippets (%d chars total)", len(search_snippets), len(current_data))
+    logger.info("Seeded %d search snippets (%d chars total)", len(search_snippets), len(current_data))
 
     # -- PLAYWRIGHT SCRAPING --
     async def _block_route(route, request):
@@ -511,8 +560,11 @@ st.set_page_config(page_title="OSINT Agent", page_icon="🕵️‍♂️", layou
 st.title("🕵️‍♂️ Autonomous OSINT Agent")
 st.markdown("Enter a research objective. The agent will autonomously plan, search, scrape, and evaluate until it has enough data to write a comprehensive report.")
 
-if not os.getenv("GOOGLE_API_KEY") or not os.getenv("BRAVE_API_KEY"):
-    st.error("Missing API Keys! Please ensure GOOGLE_API_KEY and BRAVE_API_KEY are set in your .env or Streamlit Secrets.")
+if not os.getenv("GOOGLE_API_KEY") or not os.getenv("JINA_API_KEY"):
+    st.error(
+        "Missing API Keys! Please ensure GOOGLE_API_KEY and JINA_API_KEY are set "
+        "in your .env or Streamlit Secrets. Get a Jina key at https://jina.ai/api-dashboard/"
+    )
     st.stop()
     
 # --- Model Selection UI ---
@@ -551,9 +603,6 @@ ui_api_fallback = st.checkbox(
          "which renders them server-side from a different IP. Those URLs are sent to "
          "Jina. Works without a key at a low rate limit — set JINA_API_KEY to raise it.",
 )
-if ui_api_fallback and not os.getenv("JINA_API_KEY"):
-    st.caption("ℹ️ No JINA_API_KEY set — the fallback runs on Jina's keyless tier (lower rate limit).")
-
 def _refresh_scrape_config_from_ui():
     global _MAX_SCRAPE_CONCURRENCY, _MAX_SCRAPE_PER_DOMAIN_CONCURRENCY, _URL_TIMEOUT, _MAX_RETRIES, _RESOURCE_BLOCKING
     global _API_FALLBACK_ENABLED
