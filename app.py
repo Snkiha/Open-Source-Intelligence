@@ -27,18 +27,27 @@ load_dotenv()
 
 @st.cache_resource
 def install_playwright():
-    subprocess.run(
-        [sys.executable, "-m", "playwright", "install", "chromium"],
-        check=True,
-        capture_output=True
-    )
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=True,
+            capture_output=True
+        )
+    except subprocess.CalledProcessError as exc:
+        st.error(f"Failed to install Playwright's Chromium browser: {exc.stderr.decode(errors='ignore')}")
+        st.stop()
 
 install_playwright()
 
-if not os.getenv("GOOGLE_API_KEY") and "GOOGLE_API_KEY" in st.secrets:
-    os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-if not os.getenv("TAVILY_API_KEY") and "TAVILY_API_KEY" in st.secrets:
-    os.environ["TAVILY_API_KEY"] = st.secrets["TAVILY_API_KEY"]
+try:
+    _secrets = st.secrets
+except Exception:
+    _secrets = {}
+
+if not os.getenv("GOOGLE_API_KEY") and "GOOGLE_API_KEY" in _secrets:
+    os.environ["GOOGLE_API_KEY"] = _secrets["GOOGLE_API_KEY"]
+if not os.getenv("TAVILY_API_KEY") and "TAVILY_API_KEY" in _secrets:
+    os.environ["TAVILY_API_KEY"] = _secrets["TAVILY_API_KEY"]
 
 MAX_SCRAPED_CHARS = 80_000
 MAX_CHARS_PER_PAGE = 15_000
@@ -84,8 +93,6 @@ class ResearcherState(TypedDict):
     iteration_count: int
     total_queries_run: int # NEW: Added to track all historical queries
     missing_aspects: List[str]
-    _SCRAPE_CONCURRENCY = 6
-    _SCRAPE_PER_DOMAIN_CONCURRENCY = 2
 
 class SearchQueries(BaseModel):
     queries: List[str] = Field(description="A list of 2-3 targeted search queries to find the missing information.")
@@ -170,11 +177,16 @@ async def search_scraper_node(state: ResearcherState):
         else:
             await route.continue_()
 
-    async def _crawl(u: str, browser):
-        domain = urllib.parse.urlparse(u).netloc
+    global_sem = asyncio.Semaphore(_MAX_SCRAPE_CONCURRENCY)
+    domain_sems: dict[str, asyncio.Semaphore] = {}
+
+    def _domain_sem(domain: str) -> asyncio.Semaphore:
+        if domain not in domain_sems:
+            domain_sems[domain] = asyncio.Semaphore(_MAX_SCRAPE_PER_DOMAIN_CONCURRENCY)
+        return domain_sems[domain]
+
+    async def _attempt(u: str, browser) -> tuple[str, str]:
         page = await browser.new_page()
-        start = time.perf_counter()
-        ok = False
         try:
             await Stealth().apply_stealth_async(page)
             if _RESOURCE_BLOCKING:
@@ -190,20 +202,33 @@ async def search_scraper_node(state: ResearcherState):
             content = await page.evaluate("() => document.body.innerText")
             title = await page.title()
             result = " ".join(content.split())[:MAX_CHARS_PER_PAGE]
-            ok = bool(result)
             logger.info("SUCCESS %s | title=%s | chars=%d", u, title, len(result))
             return u, result
-        except Exception as exc:
-            # Log the actual exception type so we know what's failing
-            logger.warning("FAILED %s | %s: %s", u, type(exc).__name__, exc)
-            return u, ""
         finally:
-            elapsed = (time.perf_counter() - start) * 1000
-            _DOMAIN_LATENCY_SUM[domain] = _DOMAIN_LATENCY_SUM.get(domain, 0) + elapsed
-            _DOMAIN_LATENCY_COUNT[domain] = _DOMAIN_LATENCY_COUNT.get(domain, 0) + 1
-            _DOMAIN_TOTAL[domain] = _DOMAIN_TOTAL.get(domain, 0) + 1
-            _DOMAIN_SUCCESS[domain] = _DOMAIN_SUCCESS.get(domain, 0) + (1 if ok else 0)
             await page.close()
+
+    async def _crawl(u: str, browser):
+        domain = urllib.parse.urlparse(u).netloc
+        start = time.perf_counter()
+        ok = False
+        result = ""
+        async with global_sem, _domain_sem(domain):
+            for attempt in range(_MAX_RETRIES + 1):
+                try:
+                    _, result = await _attempt(u, browser)
+                    ok = bool(result)
+                    break
+                except Exception as exc:
+                    logger.warning(
+                        "FAILED %s (attempt %d/%d) | %s: %s",
+                        u, attempt + 1, _MAX_RETRIES + 1, type(exc).__name__, exc
+                    )
+        elapsed = (time.perf_counter() - start) * 1000
+        _DOMAIN_LATENCY_SUM[domain] = _DOMAIN_LATENCY_SUM.get(domain, 0) + elapsed
+        _DOMAIN_LATENCY_COUNT[domain] = _DOMAIN_LATENCY_COUNT.get(domain, 0) + 1
+        _DOMAIN_TOTAL[domain] = _DOMAIN_TOTAL.get(domain, 0) + 1
+        _DOMAIN_SUCCESS[domain] = _DOMAIN_SUCCESS.get(domain, 0) + (1 if ok else 0)
+        return u, result
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -285,7 +310,15 @@ async def reporter_node(state: ResearcherState):
         "scraped_data": state["scraped_data"]
     })
     
-    return {"final_report": response.content[0]["text"]}
+    content = response.content
+    if isinstance(content, list):
+        text = "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        )
+    else:
+        text = content
+    return {"final_report": text}
 
 def should_continue(state: ResearcherState):
     if state.get("needs_more_info") and state.get("iteration_count", 0) < 3:
@@ -315,17 +348,6 @@ def build_graph():
 
 # -- ASYNC RUNNER -- #
 async def run_agent_workflow(objective, selected_model, status_container, metric_containers):
-    # Inline live-domain-metrics renderer
-    # def _render_domain_metrics_inline(status):
-    #     if _DOMAIN_LATENCY_SUM:
-    #         status.write("Domain Metrics:")
-    #         for domain in sorted(_DOMAIN_LATENCY_SUM.keys()):
-    #             total = _DOMAIN_TOTAL.get(domain, 0)
-    #             cnt = _DOMAIN_LATENCY_COUNT.get(domain, 1)
-    #             avg = _DOMAIN_LATENCY_SUM.get(domain, 0) / cnt if cnt else 0
-    #             succ = _DOMAIN_SUCCESS.get(domain, 0)
-    #             rate = succ / total if total > 0 else 0
-    #             status.write(f"- {domain}")
     q_metric, u_metric, c_metric = metric_containers
     
     app = build_graph()
@@ -363,9 +385,6 @@ async def run_agent_workflow(objective, selected_model, status_container, metric
             q_metric.metric("Queries Run", current_queries)
             u_metric.metric("Sites Scraped", current_urls)
             c_metric.metric("Chars Collected", current_chars)
-            # ---------------------------------
-            # Live domain metrics - show during research
-            # _render_domain_metrics_inline(status_container)
 
             if node_name == "planner":
                 status_container.write(f"🧠 **Planner generated queries:** {', '.join(state_update.get('search_queries', []))}")
