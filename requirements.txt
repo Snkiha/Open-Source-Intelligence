@@ -4,7 +4,7 @@ langchain-google-genai
 langchain-community
 langchain-core
 pydantic
-tavily-python
+httpx
 playwright
 playwright-stealth
 python-dotenv

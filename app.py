@@ -15,7 +15,7 @@ from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
-from tavily import AsyncTavilyClient
+import httpx
 from dotenv import load_dotenv
 import subprocess
 import sys
@@ -46,8 +46,8 @@ except Exception:
 
 if not os.getenv("GOOGLE_API_KEY") and "GOOGLE_API_KEY" in _secrets:
     os.environ["GOOGLE_API_KEY"] = _secrets["GOOGLE_API_KEY"]
-if not os.getenv("TAVILY_API_KEY") and "TAVILY_API_KEY" in _secrets:
-    os.environ["TAVILY_API_KEY"] = _secrets["TAVILY_API_KEY"]
+if not os.getenv("BRAVE_API_KEY") and "BRAVE_API_KEY" in _secrets:
+    os.environ["BRAVE_API_KEY"] = _secrets["BRAVE_API_KEY"]
 
 MAX_SCRAPED_CHARS = 80_000
 MAX_CHARS_PER_PAGE = 15_000
@@ -65,6 +65,10 @@ _DOMAIN_SUCCESS = {}
 _URL_TIMEOUT = 30  # seconds (configurable via UI)
 _RESOURCE_BLOCKING = True
 _MAX_RETRIES = 2
+
+# Brave Search free tier is capped at 1 request/second
+_BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+_BRAVE_RATE_LIMIT_DELAY = 1.1  # seconds between sequential Brave requests
 
 # -- LOGGING -- #
 LOG_DIR = Path("logs")
@@ -103,6 +107,18 @@ class Evaluation(BaseModel):
     missing_aspects: List[str] = Field(description="Specific pieces of information still needed. Empty if complete.")
 
 # -- HELPER FUNCTIONS -- #
+async def _brave_search(http_client: httpx.AsyncClient, query: str, count: int = 5) -> dict:
+    response = await http_client.get(
+        _BRAVE_SEARCH_URL,
+        params={"q": query, "count": count},
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": os.environ["BRAVE_API_KEY"],
+        },
+    )
+    response.raise_for_status()
+    return response.json()
 
 # -- NODES -- #
 async def planner_node(state: ResearcherState):
@@ -141,34 +157,40 @@ async def planner_node(state: ResearcherState):
     }
     
 async def search_scraper_node(state: ResearcherState):
-    client = AsyncTavilyClient(api_key=os.environ["TAVILY_API_KEY"])
     current_data = state.get("scraped_data", "")
     current_urls = state.get("visited_urls", [])
 
-    # -- TAVILY SEARCH --
-    search_tasks = [client.search(q, max_results=5, search_depth="advanced") for q in state["search_queries"]]
-    all_results = await asyncio.gather(*search_tasks)
+    # -- BRAVE SEARCH -- (sequential to respect the free tier's 1 req/sec cap)
+    all_results = []
+    async with httpx.AsyncClient(timeout=15) as http_client:
+        for i, q in enumerate(state["search_queries"]):
+            if i > 0:
+                await asyncio.sleep(_BRAVE_RATE_LIMIT_DELAY)
+            try:
+                all_results.append(await _brave_search(http_client, q, count=5))
+            except httpx.HTTPError as exc:
+                logger.warning("Brave search failed for %r | %s: %s", q, type(exc).__name__, exc)
 
     urls_to_scrape = []
-    tavily_snippets = {}
+    search_snippets = {}
 
     for results in all_results:
-        for r in results.get("results", []):
-            if r.get("score", 0) < 0.5:
+        for r in results.get("web", {}).get("results", []):
+            url = r.get("url")
+            if not url:
                 continue
-            url = r["url"]
-            snippet = r.get("content", "")
+            snippet = r.get("description", "")
             if snippet:
-                tavily_snippets[url] = snippet
+                search_snippets[url] = snippet
             if url not in current_urls and url not in urls_to_scrape:
                 urls_to_scrape.append(url)
 
-    # Seed with Tavily snippets immediately — guaranteed content even if scraping fails
-    for url, snippet in tavily_snippets.items():
+    # Seed with Brave snippets immediately — guaranteed content even if scraping fails
+    for url, snippet in search_snippets.items():
         if url not in current_urls:
             current_data += f"\n\n-- SOURCE (snippet): {url} --\n{snippet}"
 
-    logger.info("Seeded %d Tavily snippets (%d chars total)", len(tavily_snippets), len(current_data))
+    logger.info("Seeded %d Brave snippets (%d chars total)", len(search_snippets), len(current_data))
 
     # -- PLAYWRIGHT SCRAPING --
     async def _block_route(route, request):
@@ -240,7 +262,7 @@ async def search_scraper_node(state: ResearcherState):
     for url, page_content in pages:
         if not page_content or len(page_content) < 300:
             # Scrape failed or returned almost nothing — snippet already in current_data
-            if url in tavily_snippets and url not in new_urls:
+            if url in search_snippets and url not in new_urls:
                 new_urls.append(url)
             continue
         if len(current_data) >= MAX_SCRAPED_CHARS:
@@ -250,7 +272,7 @@ async def search_scraper_node(state: ResearcherState):
         if snippet_marker in current_data:
             # Upgrade snippet to full content
             current_data = current_data.replace(
-                f"\n\n{snippet_marker}\n{tavily_snippets.get(url, '')}",
+                f"\n\n{snippet_marker}\n{search_snippets.get(url, '')}",
                 f"\n\n-- SOURCE: {url} --\n{page_content}"
             )
         else:
@@ -408,8 +430,8 @@ st.set_page_config(page_title="OSINT Agent", page_icon="🕵️‍♂️", layou
 st.title("🕵️‍♂️ Autonomous OSINT Agent")
 st.markdown("Enter a research objective. The agent will autonomously plan, search, scrape, and evaluate until it has enough data to write a comprehensive report.")
 
-if not os.getenv("GOOGLE_API_KEY") or not os.getenv("TAVILY_API_KEY"):
-    st.error("Missing API Keys! Please ensure GOOGLE_API_KEY and TAVILY_API_KEY are set in your .env or Streamlit Secrets.")
+if not os.getenv("GOOGLE_API_KEY") or not os.getenv("BRAVE_API_KEY"):
+    st.error("Missing API Keys! Please ensure GOOGLE_API_KEY and BRAVE_API_KEY are set in your .env or Streamlit Secrets.")
     st.stop()
     
 # --- Model Selection UI ---
