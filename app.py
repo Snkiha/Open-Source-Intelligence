@@ -39,15 +39,20 @@ def install_playwright():
 
 install_playwright()
 
-try:
-    _secrets = st.secrets
-except Exception:
-    _secrets = {}
+def _load_secret(name: str) -> None:
+    """Promote a Streamlit secret into the environment unless it is already set."""
+    if os.getenv(name):
+        return
+    try:
+        value = st.secrets[name]
+    except Exception:
+        # No secrets.toml, or the key is absent — env/.env stays authoritative.
+        return
+    if value:
+        os.environ[name] = str(value)
 
-if not os.getenv("GOOGLE_API_KEY") and "GOOGLE_API_KEY" in _secrets:
-    os.environ["GOOGLE_API_KEY"] = _secrets["GOOGLE_API_KEY"]
-if not os.getenv("BRAVE_API_KEY") and "BRAVE_API_KEY" in _secrets:
-    os.environ["BRAVE_API_KEY"] = _secrets["BRAVE_API_KEY"]
+for _secret_name in ("GOOGLE_API_KEY", "BRAVE_API_KEY", "JINA_API_KEY"):
+    _load_secret(_secret_name)
 
 MAX_SCRAPED_CHARS = 80_000
 MAX_CHARS_PER_PAGE = 15_000
@@ -65,6 +70,21 @@ _DOMAIN_SUCCESS = {}
 _URL_TIMEOUT = 30  # seconds (configurable via UI)
 _RESOURCE_BLOCKING = True
 _MAX_RETRIES = 2
+
+# A page yielding fewer than this many characters counts as a failed scrape
+# (bot walls and consent interstitials typically return a very short body).
+_MIN_USEFUL_CHARS = 300
+
+# -- SCRAPING API FALLBACK (Jina Reader) --
+# When the headless browser fails, times out, or is served a block page, the URL
+# is re-fetched through Jina's reader API, which renders it server-side from a
+# different IP. Works without a key at a low rate limit; JINA_API_KEY raises it.
+_API_FALLBACK_ENABLED = True
+_JINA_READER_URL = "https://r.jina.ai/"
+_API_TIMEOUT = 45  # seconds — the reader renders the page before responding
+_MAX_API_CONCURRENCY = 3
+_API_RETRY_DELAY = 2.0  # seconds to back off after a 429
+_MAX_API_ATTEMPTS = 2
 
 # Brave Search free tier is capped at 1 request/second
 _BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
@@ -97,6 +117,7 @@ class ResearcherState(TypedDict):
     iteration_count: int
     total_queries_run: int # NEW: Added to track all historical queries
     missing_aspects: List[str]
+    api_scraped_count: int # Pages recovered by the scraping API fallback
 
 class SearchQueries(BaseModel):
     queries: List[str] = Field(description="A list of 2-3 targeted search queries to find the missing information.")
@@ -119,6 +140,36 @@ async def _brave_search(http_client: httpx.AsyncClient, query: str, count: int =
     )
     response.raise_for_status()
     return response.json()
+
+
+def _normalise(text: str) -> str:
+    return " ".join(text.split())[:MAX_CHARS_PER_PAGE]
+
+
+async def _scrape_via_api(http_client: httpx.AsyncClient, url: str) -> str:
+    """Fetch a page through the Jina reader API. Returns "" when it is unavailable."""
+    headers = {"Accept": "text/plain", "X-Return-Format": "text"}
+    api_key = os.getenv("JINA_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    for attempt in range(_MAX_API_ATTEMPTS):
+        try:
+            response = await http_client.get(
+                f"{_JINA_READER_URL}{url}", headers=headers, timeout=_API_TIMEOUT
+            )
+            if response.status_code == 429:
+                logger.warning(
+                    "API RATE LIMITED %s (attempt %d/%d)", url, attempt + 1, _MAX_API_ATTEMPTS
+                )
+                await asyncio.sleep(_API_RETRY_DELAY)
+                continue
+            response.raise_for_status()
+            return _normalise(response.text)
+        except httpx.HTTPError as exc:
+            logger.warning("API FAILED %s | %s: %s", url, type(exc).__name__, exc)
+            break
+    return ""
 
 # -- NODES -- #
 async def planner_node(state: ResearcherState):
@@ -223,44 +274,60 @@ async def search_scraper_node(state: ResearcherState):
                 pass
             content = await page.evaluate("() => document.body.innerText")
             title = await page.title()
-            result = " ".join(content.split())[:MAX_CHARS_PER_PAGE]
+            result = _normalise(content)
             logger.info("SUCCESS %s | title=%s | chars=%d", u, title, len(result))
             return u, result
         finally:
             await page.close()
 
-    async def _crawl(u: str, browser):
+    api_sem = asyncio.Semaphore(_MAX_API_CONCURRENCY)
+
+    async def _crawl(u: str, browser, api_client: httpx.AsyncClient):
         domain = urllib.parse.urlparse(u).netloc
         start = time.perf_counter()
-        ok = False
         result = ""
+        via = "browser"
         async with global_sem, _domain_sem(domain):
             for attempt in range(_MAX_RETRIES + 1):
                 try:
                     _, result = await _attempt(u, browser)
-                    ok = bool(result)
                     break
                 except Exception as exc:
                     logger.warning(
                         "FAILED %s (attempt %d/%d) | %s: %s",
                         u, attempt + 1, _MAX_RETRIES + 1, type(exc).__name__, exc
                     )
+
+        # The browser gave us nothing usable — retry through the scraping API.
+        if _API_FALLBACK_ENABLED and len(result) < _MIN_USEFUL_CHARS:
+            async with api_sem:
+                api_result = await _scrape_via_api(api_client, u)
+            if len(api_result) > len(result):
+                logger.info("API FALLBACK %s | chars=%d", u, len(api_result))
+                result, via = api_result, "api"
+
+        ok = len(result) >= _MIN_USEFUL_CHARS
         elapsed = (time.perf_counter() - start) * 1000
         _DOMAIN_LATENCY_SUM[domain] = _DOMAIN_LATENCY_SUM.get(domain, 0) + elapsed
         _DOMAIN_LATENCY_COUNT[domain] = _DOMAIN_LATENCY_COUNT.get(domain, 0) + 1
         _DOMAIN_TOTAL[domain] = _DOMAIN_TOTAL.get(domain, 0) + 1
         _DOMAIN_SUCCESS[domain] = _DOMAIN_SUCCESS.get(domain, 0) + (1 if ok else 0)
-        return u, result
+        return u, result, via
 
-    async with async_playwright() as p:
+    async with async_playwright() as p, httpx.AsyncClient(
+        timeout=_API_TIMEOUT, follow_redirects=True
+    ) as api_client:
         browser = await p.chromium.launch(headless=True)
-        pages = await asyncio.gather(*[_crawl(url, browser) for url in urls_to_scrape])
+        pages = await asyncio.gather(
+            *[_crawl(url, browser, api_client) for url in urls_to_scrape]
+        )
         await browser.close()
 
     # -- MERGE: replace snippets with full page content where scraping succeeded --
     new_urls = []
-    for url, page_content in pages:
-        if not page_content or len(page_content) < 300:
+    api_recovered = 0
+    for url, page_content, via in pages:
+        if len(page_content) < _MIN_USEFUL_CHARS:
             # Scrape failed or returned almost nothing — snippet already in current_data
             if url in search_snippets and url not in new_urls:
                 new_urls.append(url)
@@ -268,22 +335,31 @@ async def search_scraper_node(state: ResearcherState):
         if len(current_data) >= MAX_SCRAPED_CHARS:
             logger.warning("MAX_SCRAPED_CHARS reached. Stopping.")
             break
+        if via == "api":
+            api_recovered += 1
+        source_marker = (
+            f"-- SOURCE: {url} --" if via == "browser" else f"-- SOURCE (api): {url} --"
+        )
         snippet_marker = f"-- SOURCE (snippet): {url} --"
         if snippet_marker in current_data:
             # Upgrade snippet to full content
             current_data = current_data.replace(
                 f"\n\n{snippet_marker}\n{search_snippets.get(url, '')}",
-                f"\n\n-- SOURCE: {url} --\n{page_content}"
+                f"\n\n{source_marker}\n{page_content}"
             )
         else:
-            current_data += f"\n\n-- SOURCE: {url} --\n{page_content}"
+            current_data += f"\n\n{source_marker}\n{page_content}"
         new_urls.append(url)
 
-    logger.info("Final scraped_data: %d chars across %d sources", len(current_data), len(new_urls))
+    logger.info(
+        "Final scraped_data: %d chars across %d sources (%d recovered via scraping API)",
+        len(current_data), len(new_urls), api_recovered
+    )
 
     return {
         "scraped_data": current_data,
-        "visited_urls": [*current_urls, *new_urls]
+        "visited_urls": [*current_urls, *new_urls],
+        "api_scraped_count": state.get("api_scraped_count", 0) + api_recovered
     }
 
 async def evaluator_node(state: ResearcherState):
@@ -383,7 +459,8 @@ async def run_agent_workflow(objective, selected_model, status_container, metric
         "final_report": "",
         "iteration_count": 0,
         "total_queries_run": 0,
-        "missing_aspects": []
+        "missing_aspects": [],
+        "api_scraped_count": 0
     }
     
     final_report = ""
@@ -411,7 +488,11 @@ async def run_agent_workflow(objective, selected_model, status_container, metric
             if node_name == "planner":
                 status_container.write(f"🧠 **Planner generated queries:** {', '.join(state_update.get('search_queries', []))}")
             elif node_name == "search_scraper":
-                status_container.write(f"🕵️ **Scraping data from:** {len(state_update.get('visited_urls', []))} total sources...")
+                via_api = state_update.get("api_scraped_count", 0)
+                api_note = f" ({via_api} recovered via scraping API)" if via_api else ""
+                status_container.write(
+                    f"🕵️ **Scraping data from:** {len(state_update.get('visited_urls', []))} total sources{api_note}..."
+                )
             elif node_name == "evaluator":
                 needs_more = state_update.get('needs_more_info')
                 if needs_more:
@@ -462,14 +543,26 @@ with col_b:
     ui_timeout = st.number_input("Per-URL timeout (s)", min_value=5, max_value=120, value=_URL_TIMEOUT, key="ui_timeout")
     ui_retries = st.number_input("Max retries per URL", min_value=0, max_value=5, value=_MAX_RETRIES, key="ui_max_retries")
 ui_block = st.checkbox("Block heavy resources (images, css, fonts)", value=_RESOURCE_BLOCKING, key="ui_resource_blocking")
+ui_api_fallback = st.checkbox(
+    "Scraping API fallback (Jina Reader) when the browser is blocked",
+    value=_API_FALLBACK_ENABLED,
+    key="ui_api_fallback",
+    help="Re-fetches pages the headless browser could not read through r.jina.ai, "
+         "which renders them server-side from a different IP. Those URLs are sent to "
+         "Jina. Works without a key at a low rate limit — set JINA_API_KEY to raise it.",
+)
+if ui_api_fallback and not os.getenv("JINA_API_KEY"):
+    st.caption("ℹ️ No JINA_API_KEY set — the fallback runs on Jina's keyless tier (lower rate limit).")
 
 def _refresh_scrape_config_from_ui():
     global _MAX_SCRAPE_CONCURRENCY, _MAX_SCRAPE_PER_DOMAIN_CONCURRENCY, _URL_TIMEOUT, _MAX_RETRIES, _RESOURCE_BLOCKING
+    global _API_FALLBACK_ENABLED
     _MAX_SCRAPE_CONCURRENCY = int(ui_global)
     _MAX_SCRAPE_PER_DOMAIN_CONCURRENCY = int(ui_domain)
     _URL_TIMEOUT = int(ui_timeout)
     _MAX_RETRIES = int(ui_retries)
     _RESOURCE_BLOCKING = bool(ui_block)
+    _API_FALLBACK_ENABLED = bool(ui_api_fallback)
 
 # 2. THE BUTTON BLOCK
 if st.button("Start Research", type="primary"):
