@@ -81,8 +81,9 @@ _DEFAULT_MAX_RETRIES = 2
 _MIN_USEFUL_CHARS = 300
 
 # -- LLM CALL RELIABILITY --
-_LLM_TIMEOUT = 120     # seconds per LLM request
-_LLM_MAX_RETRIES = 3   # transient-error retries (429 / 5xx), with backoff
+_LLM_TIMEOUT = 120          # seconds per LLM request
+_LLM_MAX_RETRIES = 3        # client-level transient-error retries (429 / 5xx), with backoff
+_LLM_CHAIN_ATTEMPTS = 2     # chain-level retries — covers structured-output parse failures
 
 # -- SCRAPING API FALLBACK (Jina Reader) --
 # When the headless browser fails, times out, or is served a block page, the URL
@@ -278,7 +279,7 @@ async def planner_node(state: ResearcherState):
         Generate queries SPECIFICALLY targeting the missing aspects above.""")
     ])
 
-    chain = (prompt | structured_llm).with_retry(stop_after_attempt=_LLM_MAX_RETRIES)
+    chain = (prompt | structured_llm).with_retry(stop_after_attempt=_LLM_CHAIN_ATTEMPTS)
     response = await chain.ainvoke({
         "objective": state["objective"],
         "scraped_data": wrap_untrusted(state.get("scraped_data", "")),
@@ -433,7 +434,7 @@ async def evaluator_node(state: ResearcherState):
          "objective.\n\n" + UNTRUSTED_DATA_NOTICE),
         ("user", "Objective: {objective}\n\nSource Data:\n{scraped_data}")
     ])
-    chain = (prompt | structured_llm).with_retry(stop_after_attempt=_LLM_MAX_RETRIES)
+    chain = (prompt | structured_llm).with_retry(stop_after_attempt=_LLM_CHAIN_ATTEMPTS)
     response = await chain.ainvoke({
         "objective": state["objective"],
         "scraped_data": wrap_untrusted(state["scraped_data"])
@@ -460,7 +461,7 @@ async def reporter_node(state: ResearcherState):
         ("user", "Objective: {objective}\n\nSource Data:\n{scraped_data}")
     ])
     chain = (prompt | _make_llm(state["selected_model"])).with_retry(
-        stop_after_attempt=_LLM_MAX_RETRIES
+        stop_after_attempt=_LLM_CHAIN_ATTEMPTS
     )
 
     response = await chain.ainvoke({
