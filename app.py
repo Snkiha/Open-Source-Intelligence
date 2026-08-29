@@ -22,6 +22,8 @@ import sys
 import concurrent.futures
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
+from history_store import build_record, load_records, save_record, search_records
+
 # -- CONFIG & SECRETS -- #
 load_dotenv()
 
@@ -513,12 +515,14 @@ async def run_agent_workflow(objective, selected_model, status_container, metric
     }
     
     final_report = ""
-    
+
     # Local trackers for UI
     current_queries = 0
     current_urls = 0
     current_chars = 0
-    
+    visited_urls: List[str] = []
+    api_scraped_count = 0
+
     async for output in app.astream(initial_state):
         for node_name, state_update in output.items():
             
@@ -526,9 +530,12 @@ async def run_agent_workflow(objective, selected_model, status_container, metric
             if "total_queries_run" in state_update:
                 current_queries = state_update["total_queries_run"]
             if "visited_urls" in state_update:
-                current_urls = len(state_update["visited_urls"])
+                visited_urls = state_update["visited_urls"]
+                current_urls = len(visited_urls)
             if "scraped_data" in state_update:
                 current_chars = len(state_update["scraped_data"])
+            if "api_scraped_count" in state_update:
+                api_scraped_count = state_update["api_scraped_count"]
                 
             q_metric.metric("Queries Run", current_queries)
             u_metric.metric("Sites Scraped", current_urls)
@@ -551,8 +558,14 @@ async def run_agent_workflow(objective, selected_model, status_container, metric
             elif node_name == "reporter":
                 status_container.write("📝 **Reporter:** Report compiled successfully.")
                 final_report = state_update.get("final_report", "")
-                
-    return final_report
+
+    return {
+        "report": final_report,
+        "sources": visited_urls,
+        "queries_run": current_queries,
+        "chars_collected": current_chars,
+        "api_scraped_count": api_scraped_count,
+    }
 
 # -- STREAMLIT UI -- #
 st.set_page_config(page_title="OSINT Agent", page_icon="🕵️‍♂️", layout="centered")
@@ -654,17 +667,77 @@ if st.button("Start Research", type="primary"):
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(run_in_thread, objective, selected_model, status, (q_metric, u_metric, c_metric))
-                    final_report = future.result()
+                    run_result = future.result()
 
                 status.update(label="Research Complete!", state="complete", expanded=False)
             except Exception as e:
                 status.update(label="An error occurred", state="error")
                 st.error(f"Error details: {e}")
-                final_report = None
-        
+                run_result = None
+
+        final_report = run_result.get("report") if run_result else None
+
         if final_report:
+            # Persist the run so it can be re-read later without researching again.
+            try:
+                saved_path = save_record(build_record(
+                    objective,
+                    selected_model,
+                    final_report,
+                    sources=run_result.get("sources", []),
+                    queries_run=run_result.get("queries_run", 0),
+                    chars_collected=run_result.get("chars_collected", 0),
+                    api_scraped_count=run_result.get("api_scraped_count", 0),
+                ))
+                st.caption(f"💾 Saved to history ({saved_path.name})")
+            except OSError as exc:
+                st.warning(f"Could not save this run to history: {exc}")
+
             st.subheader("Final Report")
             st.markdown(final_report)
-            
+
             with st.expander("View Raw Markdown"):
                 st.code(final_report, language="markdown")
+
+# -- HISTORY SEARCH -- #
+st.divider()
+st.subheader("📚 Past Research")
+
+_history = load_records()
+if not _history:
+    st.caption("No saved research yet. Completed runs are stored automatically and appear here.")
+else:
+    history_query = st.text_input(
+        "Search past research:",
+        placeholder="Filter by objective, report text, or source URL…",
+        key="history_search",
+    )
+    matches = search_records(_history, history_query)
+    st.caption(
+        f"Showing {len(matches)} of {len(_history)} saved run(s)."
+        if history_query.strip()
+        else f"{len(_history)} saved run(s)."
+    )
+
+    for record in matches:
+        with st.expander(f"{record.objective or '(no objective)'}  —  {record.created_display}"):
+            meta = [
+                f"**Model:** {record.model or 'unknown'}",
+                f"**Queries:** {record.queries_run}",
+                f"**Sources:** {len(record.sources)}",
+                f"**Chars collected:** {record.chars_collected:,}",
+            ]
+            if record.api_scraped_count:
+                meta.append(f"**Recovered via scraping API:** {record.api_scraped_count}")
+            st.caption("  ·  ".join(meta))
+
+            report_tab, raw_tab, sources_tab = st.tabs(["Report", "Raw Markdown", "Sources"])
+            with report_tab:
+                st.markdown(record.report or "_This run produced no report._")
+            with raw_tab:
+                st.code(record.report, language="markdown")
+            with sources_tab:
+                if record.sources:
+                    st.markdown("\n".join(f"- {src}" for src in record.sources))
+                else:
+                    st.caption("No sources recorded for this run.")
