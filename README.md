@@ -11,6 +11,7 @@ Provide the agent with a research objective, and it will autonomously break down
 * **Scraping API Fallback:** When the headless browser is blocked, times out, or is served a near-empty body, the page is automatically re-fetched through the [Jina Reader API](https://jina.ai/reader/), which renders it server-side from a different IP.
 * **Three-Tier Content Strategy:** Every URL degrades gracefully — full browser scrape → scraping API → search snippet — so a run never comes back empty.
 * **Real-Time UI:** Built on Streamlit, the interface streams the agent's "thought process" and live metrics (Queries Run, Sites Scraped, Characters Collected) directly to the user.
+* **Cited, verifiable reports:** the reporter emits a structured `ResearchReport` — an executive summary plus findings that each cite specific source IDs — rendered to Markdown with an ID-numbered source table. Every finding is checked: uncited, mis-cited (an ID not in the data), and single-sourced findings are flagged as **data-quality flags** on the report and in history.
 * **Searchable History:** Every completed run is saved to disk (`history/`, gitignored) and surfaced in a **Past Research** panel. Search previous objectives, report text, or source URLs and re-read a finished report without running the agent again.
 * **Intelligent Evaluation:** Powered by Google's Gemini 3.1, the agent strictly evaluates whether it has enough data to fulfill the user's objective before finalizing the report.
 * **Cloud-Ready:** Includes automated Playwright binary installation, making it easily deployable to platforms like Streamlit Community Cloud.
@@ -22,7 +23,7 @@ The agent operates on a state graph with four primary nodes:
 1. **Planner:** Analyzes the objective and current gathered data to generate highly targeted web search queries.
 2. **Search & Scraper:** Uses the Jina Search API to execute searches, then scrapes textual content from the resulting URLs (Playwright first, Jina Reader as fallback).
 3. **Evaluator:** Acts as Quality Assurance. It reviews the scraped data against the initial objective. If data is missing, it loops back to the Planner. If complete, it moves to the Reporter.
-4. **Reporter:** Synthesizes all raw scraped data into a structured executive summary and detailed report.
+4. **Reporter:** Assigns every source a citation ID (`S1`, `S2`, …), asks the LLM for a structured `ResearchReport` (summary + findings with `source_ids` + gaps), validates that every finding cites a real source, and renders Markdown with a source table. Falls back to a clearly-flagged freeform summary if structured generation fails.
 
 ### How a URL is fetched
 

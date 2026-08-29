@@ -22,7 +22,7 @@ HISTORY_DIR = Path("history")
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _MAX_SLUG_LEN = 50
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2  # v2: added report_struct + warnings
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,8 @@ class ResearchRecord:
     queries_run: int = 0
     chars_collected: int = 0
     api_scraped_count: int = 0
+    report_struct: dict | None = None  # serialised ResearchReport, if structured
+    warnings: tuple[str, ...] = ()  # data-quality flags recorded at report time
 
     @property
     def created_display(self) -> str:
@@ -66,6 +68,8 @@ def build_record(
     queries_run: int = 0,
     chars_collected: int = 0,
     api_scraped_count: int = 0,
+    report_struct: dict | None = None,
+    warnings: Iterable[str] = (),
 ) -> ResearchRecord:
     """Assemble a record for a run that just finished, stamped with the current time."""
     return ResearchRecord(
@@ -78,6 +82,8 @@ def build_record(
         queries_run=queries_run,
         chars_collected=chars_collected,
         api_scraped_count=api_scraped_count,
+        report_struct=report_struct or None,
+        warnings=tuple(warnings),
     )
 
 
@@ -93,10 +99,13 @@ def _to_dict(record: ResearchRecord) -> dict[str, Any]:
         "queries_run": record.queries_run,
         "chars_collected": record.chars_collected,
         "api_scraped_count": record.api_scraped_count,
+        "report_struct": record.report_struct,
+        "warnings": list(record.warnings),
     }
 
 
 def _from_dict(data: dict[str, Any]) -> ResearchRecord:
+    report_struct = data.get("report_struct")
     return ResearchRecord(
         id=str(data.get("id") or uuid.uuid4().hex),
         objective=str(data.get("objective", "")),
@@ -107,6 +116,8 @@ def _from_dict(data: dict[str, Any]) -> ResearchRecord:
         queries_run=int(data.get("queries_run", 0) or 0),
         chars_collected=int(data.get("chars_collected", 0) or 0),
         api_scraped_count=int(data.get("api_scraped_count", 0) or 0),
+        report_struct=report_struct if isinstance(report_struct, dict) else None,
+        warnings=tuple(data.get("warnings") or ()),
     )
 
 

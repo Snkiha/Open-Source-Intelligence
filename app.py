@@ -31,6 +31,13 @@ from corpus import (
     seed_snippet,
     wrap_untrusted,
 )
+from report_schema import (
+    ResearchReport,
+    assign_source_ids,
+    render_labelled_corpus,
+    report_to_markdown,
+    validate_report,
+)
 from history_store import build_record, load_records, save_record, search_records
 
 # -- CONFIG & SECRETS -- #
@@ -129,6 +136,8 @@ class ResearcherState(TypedDict):
     scraped_data: str  # rendered, char-capped view of `sources` for the LLM nodes
     needs_more_info: bool
     final_report: str
+    report_struct: dict  # serialised ResearchReport, {} when freeform/empty
+    report_warnings: List[str]  # data-quality flags from citation validation
     iteration_count: int
     total_queries_run: int # NEW: Added to track all historical queries
     missing_aspects: List[str]
@@ -444,31 +453,35 @@ async def evaluator_node(state: ResearcherState):
     "missing_aspects": response.missing_aspects
 }
 
-async def reporter_node(state: ResearcherState):
-    scraped_data = state.get("scraped_data", "").strip()
-    
-    if not scraped_data:
-        return {"final_report": "⚠️ No data was collected. Try a different objective or check the logs for scraping errors."}
-    
+_REPORTER_SYSTEM = (
+    "You are an intelligent OSINT analyst. Using ONLY the provided source data, "
+    "produce a structured report: an executive summary, a list of findings, and "
+    "the aspects the sources did not cover.\n"
+    "Citation rules (strict):\n"
+    "- Each source block is prefixed with an ID in square brackets, e.g. [S1].\n"
+    "- Every finding MUST cite the IDs of the sources it rests on, in `source_ids`.\n"
+    "- Never cite an ID that is not present in the source data. Never invent facts.\n"
+    "- Set `confidence` to 'high' only when multiple independent sources agree.\n\n"
+    + UNTRUSTED_DATA_NOTICE
+)
+
+
+async def _freeform_report(state: ResearcherState, corpus: str) -> dict:
+    """Fallback when structured output fails — a plain Markdown summary, clearly flagged."""
     prompt = ChatPromptTemplate.from_messages([
-        ("system", (
-            "You are an intelligent analyst. Using only the provided source data, "
-            "write a structured Markdown report. Include: an executive summary, "
-            "key findings organised by theme, and a source list. "
-            "Do not invent information not present in the data.\n\n"
-            + UNTRUSTED_DATA_NOTICE
-            )),
+        ("system",
+         "You are an OSINT analyst. Using only the provided source data, write a "
+         "structured Markdown report (executive summary, key findings, source list). "
+         "Do not invent information.\n\n" + UNTRUSTED_DATA_NOTICE),
         ("user", "Objective: {objective}\n\nSource Data:\n{scraped_data}")
     ])
     chain = (prompt | _make_llm(state["selected_model"])).with_retry(
         stop_after_attempt=_LLM_CHAIN_ATTEMPTS
     )
-
     response = await chain.ainvoke({
         "objective": state["objective"],
-        "scraped_data": wrap_untrusted(state["scraped_data"])
+        "scraped_data": wrap_untrusted(corpus),
     })
-    
     content = response.content
     if isinstance(content, list):
         text = "".join(
@@ -477,7 +490,58 @@ async def reporter_node(state: ResearcherState):
         )
     else:
         text = content
-    return {"final_report": text}
+    warning = "Structured report generation failed — this is an unverified freeform summary."
+    return {
+        "final_report": f"> ⚠️ **{warning}**\n\n{text}",
+        "report_struct": {},
+        "report_warnings": [warning],
+    }
+
+
+async def reporter_node(state: ResearcherState):
+    sources = state.get("sources", {})
+    if not sources:
+        return {
+            "final_report": "⚠️ No data was collected. Try a different objective or check the logs for scraping errors.",
+            "report_struct": {},
+            "report_warnings": [],
+        }
+
+    id_pairs = assign_source_ids(sources)
+    valid_ids = {sid for sid, _ in id_pairs}
+    corpus = render_labelled_corpus(id_pairs, MAX_SCRAPED_CHARS)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", _REPORTER_SYSTEM),
+        ("user",
+         "Objective: {objective}\n\n"
+         "Source Data (each block starts with its citation ID):\n{scraped_data}")
+    ])
+    chain = (
+        prompt | _make_llm(state["selected_model"]).with_structured_output(ResearchReport)
+    ).with_retry(stop_after_attempt=_LLM_CHAIN_ATTEMPTS)
+
+    try:
+        report = await chain.ainvoke({
+            "objective": state["objective"],
+            "scraped_data": wrap_untrusted(corpus),
+        })
+    except Exception as exc:
+        logger.warning("Structured report failed (%s: %s) — falling back to freeform",
+                       type(exc).__name__, exc)
+        return await _freeform_report(state, corpus)
+
+    warnings = validate_report(report, valid_ids)
+    if warnings:
+        logger.info("Report data-quality flags: %s", "; ".join(warnings))
+    markdown = report_to_markdown(
+        report, id_pairs, objective=state["objective"], warnings=warnings
+    )
+    return {
+        "final_report": markdown,
+        "report_struct": report.model_dump(),
+        "report_warnings": warnings,
+    }
 
 _MAX_ITERATIONS = 3  # planner/search/evaluator loops before the report is forced
 
@@ -525,13 +589,17 @@ async def run_agent_workflow(objective, selected_model, scrape_config, status_co
         "scraped_data": "",
         "needs_more_info": True,
         "final_report": "",
+        "report_struct": {},
+        "report_warnings": [],
         "iteration_count": 0,
         "total_queries_run": 0,
         "missing_aspects": [],
         "api_scraped_count": 0
     }
-    
+
     final_report = ""
+    report_struct: dict = {}
+    report_warnings: List[str] = []
 
     # Local trackers for UI
     current_queries = 0
@@ -573,11 +641,20 @@ async def run_agent_workflow(objective, selected_model, scrape_config, status_co
                 else:
                     status_container.write("✅ **Evaluator:** Data gathering complete! Writing report...")
             elif node_name == "reporter":
-                status_container.write("📝 **Reporter:** Report compiled successfully.")
                 final_report = state_update.get("final_report", "")
+                report_struct = state_update.get("report_struct", {}) or {}
+                report_warnings = state_update.get("report_warnings", []) or []
+                if report_warnings:
+                    status_container.write(
+                        f"📝 **Reporter:** Report compiled — {len(report_warnings)} data-quality flag(s)."
+                    )
+                else:
+                    status_container.write("📝 **Reporter:** Report compiled successfully.")
 
     return {
         "report": final_report,
+        "report_struct": report_struct,
+        "report_warnings": report_warnings,
         "sources": visited_urls,
         "queries_run": current_queries,
         "chars_collected": current_chars,
@@ -696,6 +773,8 @@ if st.button("Start Research", type="primary"):
         final_report = run_result.get("report") if run_result else None
 
         if final_report:
+            report_warnings = run_result.get("report_warnings", []) or []
+
             # Persist the run so it can be re-read later without researching again.
             try:
                 saved_path = save_record(build_record(
@@ -706,10 +785,18 @@ if st.button("Start Research", type="primary"):
                     queries_run=run_result.get("queries_run", 0),
                     chars_collected=run_result.get("chars_collected", 0),
                     api_scraped_count=run_result.get("api_scraped_count", 0),
+                    report_struct=run_result.get("report_struct") or None,
+                    warnings=report_warnings,
                 ))
                 st.caption(f"💾 Saved to history ({saved_path.name})")
             except OSError as exc:
                 st.warning(f"Could not save this run to history: {exc}")
+
+            if report_warnings:
+                st.warning(
+                    "**Data-quality flags**\n\n"
+                    + "\n".join(f"- {w}" for w in report_warnings)
+                )
 
             st.subheader("Final Report")
             st.markdown(final_report)
@@ -748,6 +835,12 @@ else:
             if record.api_scraped_count:
                 meta.append(f"**Recovered via scraping API:** {record.api_scraped_count}")
             st.caption("  ·  ".join(meta))
+
+            if record.warnings:
+                st.warning(
+                    "**Data-quality flags**\n\n"
+                    + "\n".join(f"- {w}" for w in record.warnings)
+                )
 
             report_tab, raw_tab, sources_tab = st.tabs(["Report", "Raw Markdown", "Sources"])
             with report_tab:
