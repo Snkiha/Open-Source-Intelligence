@@ -36,6 +36,24 @@ Each discovered URL goes through an escalating chain, and the corpus records whi
 
 A tier is considered to have failed when it returns fewer than 300 characters, which is the usual signature of a bot wall or consent interstitial.
 
+The corpus is held as a `url -> {tier, content}` map (see `corpus.py`), and a source is only ever *upgraded* (snippet → full page), never rebuilt by string editing. `MAX_SCRAPED_CHARS` caps the text sent to the LLM per turn but never drops a fetched page from run state.
+
+### Reliability & safety
+
+- **Untrusted content isolation:** every LLM node fences the scraped corpus in `<SOURCE_DATA>` tags and is instructed to treat it as data only — a basic guard against prompt injection from a hostile page.
+- **LLM retries:** planner / evaluator / reporter calls run through a client-level retry (`_LLM_MAX_RETRIES`) plus a chain-level `.with_retry()`, so a transient Gemini 429/5xx no longer kills a run.
+- **Immutable per-run config:** the Scrape Tuning knobs are snapshotted into a frozen `ScrapeConfig` when a run starts and threaded explicitly into the graph — no shared module state, so concurrent viewers don't affect each other's runs.
+- **Iteration cap:** `_MAX_ITERATIONS` (default 3) bounds the plan→search→evaluate loop.
+
+### File layout
+
+| File | Responsibility |
+|------|----------------|
+| `app.py` | Streamlit UI, LangGraph wiring, agent nodes, scraping/search |
+| `corpus.py` | Pure corpus assembly helpers (import-safe, unit-tested) |
+| `history_store.py` | Persistent research-history store |
+| `tests/` | `pytest` unit tests for `corpus` and `history_store` |
+
 ## Prerequisites
 
 You will need API keys for the following services:
@@ -63,7 +81,11 @@ pip install -r requirements.txt
 
 **3. Configure your keys**
 
-Create a `.env` file in the project root (it is gitignored):
+Copy `.env.example` to `.env` (the `.env` file is gitignored) and fill in both values:
+
+```bash
+cp .env.example .env
+```
 
 ```
 GOOGLE_API_KEY=your_google_key
