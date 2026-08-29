@@ -11,6 +11,7 @@ Provide the agent with a research objective, and it will autonomously break down
 * **Scraping API Fallback:** When the headless browser is blocked, times out, or is served a near-empty body, the page is automatically re-fetched through the [Jina Reader API](https://jina.ai/reader/), which renders it server-side from a different IP.
 * **Three-Tier Content Strategy:** Every URL degrades gracefully — full browser scrape → scraping API → search snippet — so a run never comes back empty.
 * **Real-Time UI:** Built on Streamlit, the interface streams the agent's "thought process" and live metrics (Queries Run, Sites Scraped, Characters Collected) directly to the user.
+* **Searchable History:** Every completed run is saved to disk (`history/`, gitignored) and surfaced in a **Past Research** panel. Search previous objectives, report text, or source URLs and re-read a finished report without running the agent again.
 * **Intelligent Evaluation:** Powered by Google's Gemini 3.1, the agent strictly evaluates whether it has enough data to fulfill the user's objective before finalizing the report.
 * **Cloud-Ready:** Includes automated Playwright binary installation, making it easily deployable to platforms like Streamlit Community Cloud.
 
@@ -89,3 +90,15 @@ The UI exposes per-run knobs before you start a research run:
 * **Max retries per URL** — browser retry attempts before falling through to the API.
 * **Block heavy resources** — aborts images, CSS, fonts, and media for faster loads.
 * **Scraping API fallback** — enables or disables the Jina Reader tier.
+
+## Past Research
+
+Completed runs are written as individual JSON files under `history/` (objective, model, report, source URLs, and run metrics). The **Past Research** panel at the bottom of the app lists them newest-first with a search box that matches on objective, report body, or source URL — every whitespace-separated term must appear. Open a result to read the saved report, its raw Markdown, and its sources.
+
+> Storage is local to the machine. On ephemeral hosts such as Streamlit Community Cloud the history resets on redeploy; for durable history, mount a volume at `history/` or point the store at persistent storage.
+
+Run the history-store unit tests with:
+
+```bash
+pytest tests/
+```
