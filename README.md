@@ -52,8 +52,9 @@ The corpus is held as a `url -> {tier, content}` map (see `corpus.py`), and a so
 |------|----------------|
 | `app.py` | Streamlit UI, LangGraph wiring, agent nodes, scraping/search |
 | `corpus.py` | Pure corpus assembly helpers (import-safe, unit-tested) |
+| `report_schema.py` | Structured report schema, citation IDs, validation, Markdown rendering |
 | `history_store.py` | Persistent research-history store |
-| `tests/` | `pytest` unit tests for `corpus` and `history_store` |
+| `tests/` | `pytest` unit tests for `corpus`, `report_schema`, and `history_store` |
 
 ## Prerequisites
 
