@@ -39,6 +39,7 @@ from report_schema import (
     validate_report,
 )
 from history_store import build_record, load_records, save_record, search_records
+from scrape_policy import BlockedPageError, api_first_reason, is_block_page
 
 # -- CONFIG & SECRETS -- #
 load_dotenv()
@@ -353,7 +354,9 @@ async def search_scraper_node(state: ResearcherState, *, config: ScrapeConfig):
             await Stealth().apply_stealth_async(page)
             if config.resource_blocking:
                 await page.route("**/*", _block_route)
-            await page.goto(u, wait_until="domcontentloaded", timeout=config.url_timeout * 1000)
+            response = await page.goto(
+                u, wait_until="domcontentloaded", timeout=config.url_timeout * 1000
+            )
             try:
                 await page.wait_for_function(
                     "() => document.body.innerText.length > 200",
@@ -364,6 +367,11 @@ async def search_scraper_node(state: ResearcherState, *, config: ScrapeConfig):
             content = await page.evaluate("() => document.body.innerText")
             title = await page.title()
             result = _normalise(content)
+            status = response.status if response else None
+            if is_block_page(status, title, result):
+                # A bot wall can be long enough to pass the length check, so it must
+                # be rejected here or it would be cited as a real source.
+                raise BlockedPageError(f"http={status} title={title!r}")
             logger.info("SUCCESS %s | title=%s | chars=%d", u, title, len(result))
             return result
         finally:
@@ -371,20 +379,35 @@ async def search_scraper_node(state: ResearcherState, *, config: ScrapeConfig):
 
     api_sem = asyncio.Semaphore(_MAX_API_CONCURRENCY)
 
-    async def _crawl(u: str, browser, api_client: httpx.AsyncClient):
+    async def _fetch_via_browser(u: str, browser) -> str:
+        """Run the browser attempts for one URL. Returns "" when none produced content."""
         domain = urllib.parse.urlparse(u).netloc
-        result = ""
-        via = "browser"
         async with global_sem, _domain_sem(domain):
             for attempt in range(config.max_retries + 1):
                 try:
-                    result = await _attempt(u, browser)
-                    break
+                    return await _attempt(u, browser)
+                except BlockedPageError as exc:
+                    # Retrying a bot wall from the same IP just gets the same wall.
+                    logger.warning("BLOCKED %s | %s", u, exc)
+                    return ""
                 except Exception as exc:
                     logger.warning(
                         "FAILED %s (attempt %d/%d) | %s: %s",
                         u, attempt + 1, config.max_retries + 1, type(exc).__name__, exc
                     )
+        return ""
+
+    async def _crawl(u: str, browser, api_client: httpx.AsyncClient):
+        result = ""
+        via = "browser"
+
+        # PDFs and YouTube never yield useful text from the browser tier; skip the
+        # attempts (and their retries) and go straight to the reader API.
+        skip_reason = api_first_reason(u) if config.api_fallback_enabled else ""
+        if skip_reason:
+            logger.info("API FIRST %s | %s", u, skip_reason)
+        else:
+            result = await _fetch_via_browser(u, browser)
 
         # The browser gave us nothing usable — retry through the scraping API.
         if config.api_fallback_enabled and len(result) < _MIN_USEFUL_CHARS:

@@ -8,7 +8,7 @@ Provide the agent with a research objective, and it will autonomously break down
 
 * **Autonomous Agentic Loop:** Uses LangGraph to orchestrate a continuous cycle of planning, searching, evaluating, and reporting.
 * **Deep Web Scraping:** Leverages asynchronous Playwright with stealth plugins to bypass basic bot protection and read actual page content, not just SEO metadata.
-* **Scraping API Fallback:** When the headless browser is blocked, times out, or is served a near-empty body, the page is automatically re-fetched through the [Jina Reader API](https://jina.ai/reader/), which renders it server-side from a different IP.
+* **Scraping API Fallback:** When the headless browser is blocked, times out, or is served a near-empty body, the page is automatically re-fetched through the [Jina Reader API](https://jina.ai/reader/), which renders it server-side from a different IP. Bot walls are detected by HTTP status and challenge-page markers, not just body length, so a Cloudflare block page is never cited as a source. PDFs and YouTube links skip the browser tier entirely, since Chromium can't render the former inline and only returns player chrome for the latter.
 * **Three-Tier Content Strategy:** Every URL degrades gracefully — full browser scrape → scraping API → search snippet — so a run never comes back empty.
 * **Real-Time UI:** Built on Streamlit, the interface streams the agent's "thought process" and live metrics (Queries Run, Sites Scraped, Characters Collected) directly to the user.
 * **Cited, verifiable reports:** the reporter emits a structured `ResearchReport` — an executive summary plus findings that each cite specific source IDs — rendered to Markdown with an ID-numbered source table. Every finding is checked: uncited, mis-cited (an ID not in the data), and single-sourced findings are flagged as **data-quality flags** on the report and in history.
@@ -35,7 +35,7 @@ Each discovered URL goes through an escalating chain, and the corpus records whi
 | 2 | Jina Reader API (`https://r.jina.ai/<url>`) | `-- SOURCE (api): <url> --` |
 | 3 | Search result snippet (seeded up front) | `-- SOURCE (snippet): <url> --` |
 
-A tier is considered to have failed when it returns fewer than 300 characters, which is the usual signature of a bot wall or consent interstitial.
+Tier 1 is considered to have failed when it raises, returns fewer than 300 characters, answers with an HTTP error status, or serves a recognised bot-challenge page (`scrape_policy.is_block_page`). A blocked page is not retried — the same IP just gets the same wall — and PDF / YouTube URLs bypass tier 1 altogether (`scrape_policy.api_first_reason`).
 
 The corpus is held as a `url -> {tier, content}` map (see `corpus.py`), and a source is only ever *upgraded* (snippet → full page), never rebuilt by string editing. `MAX_SCRAPED_CHARS` caps the text sent to the LLM per turn but never drops a fetched page from run state.
 
@@ -52,9 +52,10 @@ The corpus is held as a `url -> {tier, content}` map (see `corpus.py`), and a so
 |------|----------------|
 | `app.py` | Streamlit UI, LangGraph wiring, agent nodes, scraping/search |
 | `corpus.py` | Pure corpus assembly helpers (import-safe, unit-tested) |
+| `scrape_policy.py` | Block-page detection and API-first URL routing (import-safe, unit-tested) |
 | `report_schema.py` | Structured report schema, citation IDs, validation, Markdown rendering |
 | `history_store.py` | Persistent research-history store |
-| `tests/` | `pytest` unit tests for `corpus`, `report_schema`, and `history_store` |
+| `tests/` | `pytest` unit tests for `corpus`, `scrape_policy`, `report_schema`, and `history_store` |
 
 ## Prerequisites
 
